@@ -61,13 +61,14 @@ class ComparisonRule(Protocol):
 
 @dataclass(frozen=True)
 class IntegerComparisonRule:
-    """The only rule Phase 1 of ADR 0005 needs: a field whose value is
-    already an unambiguous bare integer string (context_window_tokens).
-    Prices/benchmarks/regions/modalities each need their own
-    representation designed first (currency+unit+basis, benchmark
-    name+conditions, set semantics) -- see ADR 0005 point (f) -- so they
-    have no rule here and stay excluded from comparison, not guessed at
-    with this one."""
+    """Phase 1 of ADR 0005: a field whose value is already an
+    unambiguous bare integer string (context_window_tokens).
+    Benchmarks/regions/modalities each still need their own
+    representation designed first (basis/conditions for benchmark
+    scores, set semantics for regions/modalities) -- see ADR 0005 point
+    (f) -- so they have no rule here and stay excluded from comparison,
+    not guessed at with this one. Prices moved to their own
+    PriceComparisonRule below in Phase 2."""
 
     unit: str
 
@@ -93,12 +94,51 @@ class IntegerComparisonRule:
         return "equal"
 
 
+@dataclass(frozen=True)
+class PriceComparisonRule:
+    """Phase 2 of ADR 0005: input_price_usd/output_price_usd's own
+    representation -- a plain USD-per-unit numeric string, with an
+    optional leading "$" and thousands separators tolerated (the same
+    formatting-tolerance grounding.py's numbers_in()/value_supported_by_quote()
+    already extend to a disclosed value elsewhere in this codebase, kept
+    consistent here). Deliberately still excludes currency conversion,
+    a differing basis (per-token vs. per-million-tokens), and any other
+    unit mismatch across the two sides being compared -- this rule
+    trusts the stored value's basis is already consistent for a given
+    field, the same trust IntegerComparisonRule already places in
+    context_window_tokens always meaning the same unit (tokens)."""
+
+    unit: str = "USD"
+
+    def parse(self, value: str) -> float:
+        cleaned = value.strip().lstrip("$").replace(",", "").strip()
+        try:
+            return float(cleaned)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Cannot parse price value: {value!r}") from exc
+
+    def relation(self, parsed_a: object, parsed_b: object) -> str:
+        # Same reasoning as IntegerComparisonRule.relation's own comment
+        # -- object, not float, to match the ComparisonRule Protocol
+        # exactly; an explicit raise (not assert) so it still fails
+        # loudly under -O and isn't stripped (bandit B101).
+        if not isinstance(parsed_a, (int, float)) or not isinstance(parsed_b, (int, float)):
+            raise TypeError(f"relation() expected floats/ints, got {parsed_a!r} and {parsed_b!r}")
+        if parsed_a < parsed_b:
+            return "lower"
+        if parsed_a > parsed_b:
+            return "higher"
+        return "equal"
+
+
 COMPARISON_RULES: dict[str, ComparisonRule] = {
     "context_window_tokens": IntegerComparisonRule(unit="tokens"),
-    # input_price_usd, output_price_usd, benchmark_scores,
-    # availability_regions, modalities, licence_terms: deliberately
-    # absent -- see IntegerComparisonRule's docstring and ADR 0005
-    # point (f). compare_subjects() drops any candidate naming a field
-    # not in this registry, the same way it already drops a field not
-    # in COMPARABLE_FIELDS at all.
+    "input_price_usd": PriceComparisonRule(unit="USD"),
+    "output_price_usd": PriceComparisonRule(unit="USD"),
+    # benchmark_scores, availability_regions, modalities, licence_terms:
+    # still deliberately absent -- see IntegerComparisonRule's docstring
+    # and ADR 0005 point (f); each needs its own representation designed
+    # before it can be added here. compare_subjects() drops any
+    # candidate naming a field not in this registry, the same way it
+    # already drops a field not in COMPARABLE_FIELDS at all.
 }

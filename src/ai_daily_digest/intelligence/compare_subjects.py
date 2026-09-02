@@ -16,10 +16,13 @@ design could not, no matter how many checks got bolted onto it:
     class structurally impossible: code alone decides which number goes
     with which subject.
 
-Phase 1 (ADR 0005 point 2): only `context_window_tokens` has a
-registered `ComparisonRule` (`shared/attributes.py::COMPARISON_RULES`).
-Every other field is excluded from comparison until its own
-representation is designed — a deliberate scope limit, not a bug.
+ADR 0005 point 2: only fields with a registered `ComparisonRule`
+(`shared/attributes.py::COMPARISON_RULES`) are eligible for comparison
+at all — Phase 1 added `context_window_tokens`, Phase 2 added
+`input_price_usd`/`output_price_usd`. Every other field
+(benchmark_scores, availability_regions, licence_terms, modalities) is
+still excluded until its own representation is designed — a deliberate
+scope limit, not a bug.
 
 ADR 0006 (docs/adr/0006-disclosure-status-semantics.md): a row with
 nothing ever recorded ("unknown") and a row with a real, grounded
@@ -264,9 +267,11 @@ def _resolve_assertion(  # pylint: disable=too-many-return-statements
 
     rule = COMPARISON_RULES.get(assertion.field)
     if rule is None:
-        # Phase 1: only context_window_tokens has a rule. Every other
-        # field is excluded from comparison until its own representation
-        # is designed (ADR 0005 point 2) -- not a guess, an exclusion.
+        # Only fields with a registered ComparisonRule are eligible --
+        # context_window_tokens (Phase 1) and input_price_usd/
+        # output_price_usd (Phase 2) currently. Every other field is
+        # excluded from comparison until its own representation is
+        # designed (ADR 0005 point 2) -- not a guess, an exclusion.
         return None, "field_not_comparable"
 
     row_a = index.row_by_subject_field.get((_subject_key(assertion.subject_a), assertion.field))

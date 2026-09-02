@@ -145,12 +145,16 @@ worked example with fakes standing in for all three.
   subject (swapped) — a check confirming both numbers appear *somewhere*
   among real values can't detect a swap, but code deciding which number
   goes with which subject makes the swap structurally impossible.
-- **Phase 1 scope**: only `context_window_tokens` has a registered
-  `ComparisonRule` (`shared/attributes.py::COMPARISON_RULES`) — every
-  other field is excluded from comparison until its own representation
-  (currency/unit/basis for prices, benchmark name/conditions for scores,
-  set semantics for regions/modalities) is designed via its own follow-up
-  ADR. Not a bug — a deliberate, disclosed scope limit.
+- **Scope**: only fields with a registered `ComparisonRule`
+  (`shared/attributes.py::COMPARISON_RULES`) are eligible for comparison
+  — Phase 1 added `context_window_tokens`, Phase 2 added
+  `input_price_usd`/`output_price_usd` (`PriceComparisonRule`: a plain
+  USD numeric string, optional leading `$`/thousands separators
+  tolerated; no currency conversion or per-token-vs-per-million-token
+  basis reconciliation). Every other field (benchmark_scores,
+  availability_regions, licence_terms, modalities) is still excluded
+  from comparison until its own representation is designed via its own
+  follow-up. Not a bug — a deliberate, disclosed scope limit.
 - **Guardrail** (all enforced in code, not the prompt): an assertion
   naming the same subject twice, an unknown subject, a field with no
   registered `ComparisonRule`, a subject/field with no disclosed value,

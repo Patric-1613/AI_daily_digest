@@ -144,3 +144,25 @@ explicitly separated **design acceptance** from **implementation scope for PR #5
 
 This ADR still requires Person C's review before being considered fully accepted by the team, per
 the team's contract-change process (`docs/API_CONTRACT.md`).
+
+## Phase 2: price comparison rules (2026-09-02)
+
+Point 2's Phase 1 scope (`context_window_tokens` only) has been extended to
+`input_price_usd`/`output_price_usd`, per direct review instruction — implemented ahead of a
+dedicated follow-up ADR for price representation, which point (f) originally anticipated each
+comparable field would get. Recorded here as the same kind of disclosed, deliberate scope
+decision this ADR's other rounds have been, not a silent expansion:
+
+- `shared/attributes.py::PriceComparisonRule` — a plain USD numeric string (optional leading `$`,
+  thousands separators tolerated, mirroring the formatting tolerance `grounding.py`'s own
+  number-matching already extends to a disclosed value elsewhere in this codebase). Registered for
+  both `input_price_usd` and `output_price_usd` in `COMPARISON_RULES`.
+- **Explicitly still NOT handled**: currency conversion, and reconciling a basis mismatch (e.g. one
+  side priced per-token, the other per-million-tokens) — this rule trusts the stored value's basis
+  is already consistent for a given field across every subject being compared, the same trust
+  `IntegerComparisonRule` already places in `context_window_tokens` always meaning the same unit.
+  Getting this wrong would silently render a numerically-correct-looking but semantically-wrong
+  comparison; not addressed here, and worth its own explicit design pass before it's relied on for
+  real production content, not assumed safe by omission.
+- `benchmark_scores`, `availability_regions`, `licence_terms`, `modalities` remain excluded from
+  comparison, unchanged by this round.
