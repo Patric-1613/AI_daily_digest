@@ -588,7 +588,7 @@ class PostgresFactStore:
 
     # -- shared feed read protocols (shared/repositories.py) ------------
 
-    async def list_changes(
+    async def list_changes(  # pylint: disable=too-many-locals
         self,
         *,
         feed_filter: ChangeFeedFilter | None = None,
@@ -666,14 +666,14 @@ class PostgresFactStore:
             )
         return results
 
-    async def list_digests(
+    async def list_digests(  # pylint: disable=too-many-locals
         self,
         *,
         feed_filter: DigestFeedFilter | None = None,
         after: tuple[date, uuid.UUID] | None = None,
         limit: int = 20,
     ) -> Sequence[Digest]:
-        """Fetch up to limit + 1 published digests ordered by (digest_date DESC, id DESC) — ADR 0008.
+        """Fetch up to limit + 1 published digests ordered by (digest_date DESC, id DESC).
 
         IMPORTANT: Only digests with status='published' are returned, matching the
         idx_digests_pagination partial index.

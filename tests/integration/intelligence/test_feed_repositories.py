@@ -16,7 +16,6 @@ from ai_daily_digest.intelligence.db.models import (
     DigestClaimCitationModel,
     DigestClaimModel,
     DigestModel,
-    SubjectModel,
 )
 from ai_daily_digest.intelligence.db.repository import (
     PostgresChangeFeedRepository,
@@ -25,7 +24,7 @@ from ai_daily_digest.intelligence.db.repository import (
 )
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.repositories import ChangeFeedFilter, DigestFeedFilter
-from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestStatus
+from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestStatus, Subject
 
 pytestmark = pytest.mark.integration
 
@@ -60,6 +59,51 @@ async def _create_snapshot(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]
     return item_id, snap_id
 
 
+async def _create_published_digest(
+    session: AsyncSession,
+    *,
+    digest_id: uuid.UUID,
+    digest_date: date,
+    title: str,
+    snapshot_id: uuid.UUID,
+) -> DigestModel:
+    """Helper to seed a published digest with valid claim and citation to satisfy DB trigger."""
+    digest = DigestModel(
+        id=digest_id,
+        digest_date=digest_date,
+        status=DigestStatus.DRAFT.value,
+        title=title,
+        created_at=BASE_TIME,
+    )
+    session.add(digest)
+    await session.flush()
+
+    c_id = new_id()
+    claim = DigestClaimModel(
+        id=c_id,
+        digest_id=digest_id,
+        position=0,
+        text=f"Claim for {title}",
+        validation_status=ClaimValidationStatus.SUPPORTED.value,
+        created_at=BASE_TIME,
+    )
+    session.add(claim)
+    await session.flush()
+
+    citation = DigestClaimCitationModel(
+        claim_id=c_id,
+        snapshot_id=snapshot_id,
+        position=0,
+        created_at=BASE_TIME,
+    )
+    session.add(citation)
+    await session.flush()
+
+    digest.status = DigestStatus.PUBLISHED.value
+    await session.flush()
+    return digest
+
+
 @pytest.mark.asyncio
 async def test_list_changes_ordering_and_keyset_pagination(
     database_session: AsyncSession,
@@ -67,16 +111,9 @@ async def test_list_changes_ordering_and_keyset_pagination(
     """Test ChangeFeedRepository ordering (detected_at DESC, id DESC) and limit+1 keyset pagination."""
     _, snap_id = await _create_snapshot(database_session)
 
-    # Seed subject and change set
-    ck, pk = "openai", "gpt4o"
-    subj = SubjectModel(
-        company_key=ck,
-        product_key=pk,
-        company="OpenAI",
-        product="GPT-4o",
-        created_at=BASE_TIME,
-    )
-    database_session.add(subj)
+    repo = PostgresChangeFeedRepository(database_session)
+    subj_model = await repo.ensure_subject(Subject(company="OpenAI", product="GPT-4o"))
+    ck, pk = subj_model.company_key, subj_model.product_key
 
     cs_id = new_id()
     cs = ChangeSetModel(
@@ -116,8 +153,6 @@ async def test_list_changes_ordering_and_keyset_pagination(
         database_session.add(ch)
     await database_session.flush()
 
-    repo = PostgresChangeFeedRepository(database_session)
-
     # Page 1: limit = 2 -> returns 3 rows (limit + 1) in descending detected_at order
     page1 = await repo.list_changes(limit=2)
     assert len(page1) == 3
@@ -146,36 +181,22 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
     """Test ChangeFeedRepository filters by company_key, product_key, and field."""
     _, snap_id = await _create_snapshot(database_session)
 
-    # Subject 1: OpenAI GPT-4o
-    subj1 = SubjectModel(
-        company_key="openai",
-        product_key="gpt4o",
-        company="OpenAI",
-        product="GPT-4o",
-        created_at=BASE_TIME,
-    )
-    # Subject 2: Anthropic Claude
-    subj2 = SubjectModel(
-        company_key="anthropic",
-        product_key="claude",
-        company="Anthropic",
-        product="Claude",
-        created_at=BASE_TIME,
-    )
-    database_session.add_all([subj1, subj2])
+    repo = PostgresFactStore(database_session)
+    subj1 = await repo.ensure_subject(Subject(company="OpenAI", product="GPT-4o"))
+    subj2 = await repo.ensure_subject(Subject(company="Anthropic", product="Claude"))
 
     cs1_id, cs2_id = new_id(), new_id()
     cs1 = ChangeSetModel(
         id=cs1_id,
-        company_key="openai",
-        product_key="gpt4o",
+        company_key=subj1.company_key,
+        product_key=subj1.product_key,
         review_status="pending",
         created_at=BASE_TIME,
     )
     cs2 = ChangeSetModel(
         id=cs2_id,
-        company_key="anthropic",
-        product_key="claude",
+        company_key=subj2.company_key,
+        product_key=subj2.product_key,
         review_status="pending",
         created_at=BASE_TIME,
     )
@@ -188,8 +209,8 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
         detected_at=BASE_TIME + timedelta(hours=1),
         change_set_id=cs1_id,
         position=0,
-        company_key="openai",
-        product_key="gpt4o",
+        company_key=subj1.company_key,
+        product_key=subj1.product_key,
         field="context_window_tokens",
         change_type="increased",
         confidence=0.95,
@@ -208,8 +229,8 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
         detected_at=BASE_TIME + timedelta(hours=2),
         change_set_id=cs1_id,
         position=1,
-        company_key="openai",
-        product_key="gpt4o",
+        company_key=subj1.company_key,
+        product_key=subj1.product_key,
         field="input_price_usd",
         change_type="decreased",
         confidence=0.95,
@@ -228,8 +249,8 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
         detected_at=BASE_TIME + timedelta(hours=3),
         change_set_id=cs2_id,
         position=0,
-        company_key="anthropic",
-        product_key="claude",
+        company_key=subj2.company_key,
+        product_key=subj2.product_key,
         field="context_window_tokens",
         change_type="increased",
         confidence=0.95,
@@ -245,10 +266,10 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
     database_session.add_all([ch1, ch2, ch3])
     await database_session.flush()
 
-    repo = PostgresFactStore(database_session)
-
     # Filter by company_key="openai"
-    openai_changes = await repo.list_changes(feed_filter=ChangeFeedFilter(company_key="openai"))
+    openai_changes = await repo.list_changes(
+        feed_filter=ChangeFeedFilter(company_key=subj1.company_key)
+    )
     assert len(openai_changes) == 2
     assert {c.field for c in openai_changes} == {"context_window_tokens", "input_price_usd"}
 
@@ -265,68 +286,47 @@ async def test_list_digests_only_published_and_pagination(
     """Test DigestFeedRepository returns only published digests and handles keyset pagination."""
     _, snap_id = await _create_snapshot(database_session)
 
-    # Seed 3 published digests, 1 draft, 1 review
+    # Seed 3 published digests with valid claims/citations
     d_pub1_id, d_pub2_id, d_pub3_id = new_id(), new_id(), new_id()
-    d_draft_id, d_rev_id = new_id(), new_id()
-
-    pub1 = DigestModel(
-        id=d_pub1_id,
+    await _create_published_digest(
+        database_session,
+        digest_id=d_pub1_id,
         digest_date=date(2026, 9, 3),
-        status="published",
         title="Digest Sept 3",
-        created_at=BASE_TIME,
+        snapshot_id=snap_id,
     )
-    pub2 = DigestModel(
-        id=d_pub2_id,
+    await _create_published_digest(
+        database_session,
+        digest_id=d_pub2_id,
         digest_date=date(2026, 9, 2),
-        status="published",
         title="Digest Sept 2",
-        created_at=BASE_TIME,
+        snapshot_id=snap_id,
     )
-    pub3 = DigestModel(
-        id=d_pub3_id,
+    await _create_published_digest(
+        database_session,
+        digest_id=d_pub3_id,
         digest_date=date(2026, 9, 1),
-        status="published",
         title="Digest Sept 1",
-        created_at=BASE_TIME,
+        snapshot_id=snap_id,
     )
+
+    # Seed 1 draft digest and 1 review digest
+    d_draft_id, d_rev_id = new_id(), new_id()
     draft = DigestModel(
         id=d_draft_id,
         digest_date=date(2026, 9, 4),
-        status="draft",
+        status=DigestStatus.DRAFT.value,
         title="Draft Digest",
         created_at=BASE_TIME,
     )
     review = DigestModel(
         id=d_rev_id,
         digest_date=date(2026, 9, 5),
-        status="review",
+        status=DigestStatus.REVIEW.value,
         title="Review Digest",
         created_at=BASE_TIME,
     )
-    database_session.add_all([pub1, pub2, pub3, draft, review])
-    await database_session.flush()
-
-    # Add claims and citations to published digests
-    c1_id = new_id()
-    c1 = DigestClaimModel(
-        id=c1_id,
-        digest_id=d_pub1_id,
-        position=0,
-        text="OpenAI increased GPT-4o context window.",
-        validation_status="supported",
-        created_at=BASE_TIME,
-    )
-    database_session.add(c1)
-    await database_session.flush()
-
-    cit1 = DigestClaimCitationModel(
-        claim_id=c1_id,
-        snapshot_id=snap_id,
-        position=0,
-        created_at=BASE_TIME,
-    )
-    database_session.add(cit1)
+    database_session.add_all([draft, review])
     await database_session.flush()
 
     repo = PostgresDigestFeedRepository(database_session)
@@ -341,7 +341,7 @@ async def test_list_digests_only_published_and_pagination(
     # Verify claim & citation mapping
     assert page1[0].status == DigestStatus.PUBLISHED
     assert len(page1[0].claims) == 1
-    assert page1[0].claims[0].text == "OpenAI increased GPT-4o context window."
+    assert page1[0].claims[0].text == "Claim for Digest Sept 3"
     assert page1[0].claims[0].validation_status == ClaimValidationStatus.SUPPORTED
     assert page1[0].claims[0].citation_snapshot_ids == [snap_id]
 
@@ -356,31 +356,30 @@ async def test_list_digests_only_published_and_pagination(
 @pytest.mark.asyncio
 async def test_list_digests_date_filtering(database_session: AsyncSession) -> None:
     """Test DigestFeedRepository filters by start_date and end_date."""
+    _, snap_id = await _create_snapshot(database_session)
     d1_id, d2_id, d3_id = new_id(), new_id(), new_id()
 
-    d1 = DigestModel(
-        id=d1_id,
+    await _create_published_digest(
+        database_session,
+        digest_id=d1_id,
         digest_date=date(2026, 9, 10),
-        status="published",
         title="Digest Sept 10",
-        created_at=BASE_TIME,
+        snapshot_id=snap_id,
     )
-    d2 = DigestModel(
-        id=d2_id,
+    await _create_published_digest(
+        database_session,
+        digest_id=d2_id,
         digest_date=date(2026, 9, 11),
-        status="published",
         title="Digest Sept 11",
-        created_at=BASE_TIME,
+        snapshot_id=snap_id,
     )
-    d3 = DigestModel(
-        id=d3_id,
+    await _create_published_digest(
+        database_session,
+        digest_id=d3_id,
         digest_date=date(2026, 9, 12),
-        status="published",
         title="Digest Sept 12",
-        created_at=BASE_TIME,
+        snapshot_id=snap_id,
     )
-    database_session.add_all([d1, d2, d3])
-    await database_session.flush()
 
     repo = PostgresDigestFeedRepository(database_session)
 
