@@ -31,7 +31,11 @@ pytestmark = pytest.mark.integration
 BASE_TIME = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
 
 
-async def _create_snapshot(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
+async def _create_snapshot(
+    session: AsyncSession,
+    *,
+    fetched_at: datetime = BASE_TIME,
+) -> tuple[uuid.UUID, uuid.UUID]:
     """Helper to create a SourceItem and DocumentSnapshot for foreign key satisfaction."""
     item_id = new_id()
     snap_id = new_id()
@@ -42,7 +46,7 @@ async def _create_snapshot(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]
         publisher="OpenAI",
         title="Sample Release",
         canonical_url=f"https://openai.example.com/news/{item_id}",
-        first_fetched_at=BASE_TIME,
+        first_fetched_at=fetched_at,
     )
     session.add(item)
     await session.flush()
@@ -51,7 +55,7 @@ async def _create_snapshot(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]
         id=snap_id,
         source_item_id=item_id,
         content_hash=f"hash-{snap_id}",
-        fetched_at=BASE_TIME,
+        fetched_at=fetched_at,
         content_text="Sample snapshot text",
     )
     session.add(snap)
@@ -109,7 +113,8 @@ async def test_list_changes_ordering_and_keyset_pagination(
     database_session: AsyncSession,
 ) -> None:
     """Test ChangeFeedRepository ordering (detected_at DESC, id DESC) and limit+1 keyset pagination."""
-    _, snap_id = await _create_snapshot(database_session)
+    prev_time = BASE_TIME - timedelta(days=1)
+    _, prev_snap_id = await _create_snapshot(database_session, fetched_at=prev_time)
 
     repo = PostgresChangeFeedRepository(database_session)
     subj_model = await repo.ensure_subject(Subject(company="OpenAI", product="GPT-4o"))
@@ -126,11 +131,12 @@ async def test_list_changes_ordering_and_keyset_pagination(
     database_session.add(cs)
     await database_session.flush()
 
-    # Seed 4 changes with distinct detected_at times
+    # Seed 4 changes with distinct detected_at times and matching snapshot fetched_at
     times = [BASE_TIME + timedelta(hours=i) for i in range(4)]
     change_ids = [new_id() for _ in range(4)]
 
     for pos, (cid, dt) in enumerate(zip(change_ids, times, strict=True)):
+        _, curr_snap_id = await _create_snapshot(database_session, fetched_at=dt)
         ch = ChangeModel(
             id=cid,
             detected_at=dt,
@@ -143,11 +149,11 @@ async def test_list_changes_ordering_and_keyset_pagination(
             confidence=0.95,
             review_status="pending",
             previous_value="128000",
-            previous_observed_at=BASE_TIME - timedelta(days=1),
-            previous_snapshot_id=snap_id,
+            previous_observed_at=prev_time,
+            previous_snapshot_id=prev_snap_id,
             current_value=f"{(pos + 1) * 100000}",
             current_observed_at=dt,
-            current_snapshot_id=snap_id,
+            current_snapshot_id=curr_snap_id,
             created_at=dt,
         )
         database_session.add(ch)
@@ -179,7 +185,7 @@ async def test_list_changes_ordering_and_keyset_pagination(
 @pytest.mark.asyncio
 async def test_list_changes_filtering(database_session: AsyncSession) -> None:
     """Test ChangeFeedRepository filters by company_key, product_key, and field."""
-    _, snap_id = await _create_snapshot(database_session)
+    _, prev_snap_id = await _create_snapshot(database_session, fetched_at=BASE_TIME)
 
     repo = PostgresFactStore(database_session)
     subj1 = await repo.ensure_subject(Subject(company="OpenAI", product="GPT-4o"))
@@ -203,10 +209,12 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
     database_session.add_all([cs1, cs2])
     await database_session.flush()
 
+    t1 = BASE_TIME + timedelta(hours=1)
+    _, snap1_id = await _create_snapshot(database_session, fetched_at=t1)
     # Change 1: OpenAI context_window_tokens
     ch1 = ChangeModel(
         id=new_id(),
-        detected_at=BASE_TIME + timedelta(hours=1),
+        detected_at=t1,
         change_set_id=cs1_id,
         position=0,
         company_key=subj1.company_key,
@@ -217,16 +225,18 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
         review_status="pending",
         previous_value="128000",
         previous_observed_at=BASE_TIME,
-        previous_snapshot_id=snap_id,
+        previous_snapshot_id=prev_snap_id,
         current_value="256000",
-        current_observed_at=BASE_TIME + timedelta(hours=1),
-        current_snapshot_id=snap_id,
-        created_at=BASE_TIME,
+        current_observed_at=t1,
+        current_snapshot_id=snap1_id,
+        created_at=t1,
     )
+    t2 = BASE_TIME + timedelta(hours=2)
+    _, snap2_id = await _create_snapshot(database_session, fetched_at=t2)
     # Change 2: OpenAI input_price_usd
     ch2 = ChangeModel(
         id=new_id(),
-        detected_at=BASE_TIME + timedelta(hours=2),
+        detected_at=t2,
         change_set_id=cs1_id,
         position=1,
         company_key=subj1.company_key,
@@ -237,16 +247,18 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
         review_status="pending",
         previous_value="5.00",
         previous_observed_at=BASE_TIME,
-        previous_snapshot_id=snap_id,
+        previous_snapshot_id=prev_snap_id,
         current_value="2.50",
-        current_observed_at=BASE_TIME + timedelta(hours=2),
-        current_snapshot_id=snap_id,
-        created_at=BASE_TIME,
+        current_observed_at=t2,
+        current_snapshot_id=snap2_id,
+        created_at=t2,
     )
+    t3 = BASE_TIME + timedelta(hours=3)
+    _, snap3_id = await _create_snapshot(database_session, fetched_at=t3)
     # Change 3: Anthropic context_window_tokens
     ch3 = ChangeModel(
         id=new_id(),
-        detected_at=BASE_TIME + timedelta(hours=3),
+        detected_at=t3,
         change_set_id=cs2_id,
         position=0,
         company_key=subj2.company_key,
@@ -257,11 +269,11 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
         review_status="pending",
         previous_value="100000",
         previous_observed_at=BASE_TIME,
-        previous_snapshot_id=snap_id,
+        previous_snapshot_id=prev_snap_id,
         current_value="200000",
-        current_observed_at=BASE_TIME + timedelta(hours=3),
-        current_snapshot_id=snap_id,
-        created_at=BASE_TIME,
+        current_observed_at=t3,
+        current_snapshot_id=snap3_id,
+        created_at=t3,
     )
     database_session.add_all([ch1, ch2, ch3])
     await database_session.flush()
