@@ -1,4 +1,4 @@
-"""PostgreSQL FactStore and change persistence repository — ADR 0011 §5."""
+"""PostgreSQL FactStore, change persistence, and feed repository — ADR 0011 §5."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import hashlib
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,14 +15,22 @@ from ai_daily_digest.intelligence.db.models import (
     ChangeModel,
     ChangeSetModel,
     CurrentFactModel,
+    DigestClaimCitationModel,
+    DigestClaimModel,
+    DigestModel,
     ExtractedFactModel,
     SubjectModel,
 )
 from ai_daily_digest.intelligence.facts import _infer_change_type, normalise_name
 from ai_daily_digest.shared.ids import new_id
+from ai_daily_digest.shared.repositories import ChangeFeedFilter, DigestFeedFilter
 from ai_daily_digest.shared.schemas import (
     Change,
+    ClaimValidationStatus,
     Confidence,
+    Digest,
+    DigestClaim,
+    DigestStatus,
     ExtractedFact,
     FactObservation,
     Subject,
@@ -30,7 +38,14 @@ from ai_daily_digest.shared.schemas import (
     validate_change_shape,
 )
 
-__all__ = ["PostgresFactStore"]
+__all__ = [
+    "PostgresChangeFeedRepository",
+    "PostgresDigestFeedRepository",
+    "PostgresFactStore",
+]
+
+_CHANGES_KEYSET_PREDICATE_SQL = text("(detected_at, id) < (:after_ts, :after_id)")
+_DIGESTS_KEYSET_PREDICATE_SQL = text("(digest_date, id) < (:after_date, :after_id)")
 
 
 def _subject_keys(subject: Subject) -> tuple[str, str]:
@@ -570,3 +585,180 @@ class PostgresFactStore:
         previous_ids = [pid for pid in prev_res.scalars().all() if pid is not None]
 
         return current_ids, previous_ids
+
+    # -- shared feed read protocols (shared/repositories.py) ------------
+
+    async def list_changes(
+        self,
+        *,
+        feed_filter: ChangeFeedFilter | None = None,
+        after: tuple[datetime, uuid.UUID] | None = None,
+        limit: int = 20,
+    ) -> Sequence[Change]:
+        """Fetch up to limit + 1 changes ordered by (detected_at DESC, id DESC) — ADR 0008.
+
+        Args:
+            feed_filter: Optional filter criteria (company_key, product_key, field).
+            after: Keyset continuation tuple (detected_at, id), if resuming.
+            limit: Maximum items to return in the page (returns up to limit + 1
+                   to support forward cursor generation).
+
+        Returns:
+            A sequence of up to limit + 1 Change domain instances matching the
+            filters and keyset predicate.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit must be positive, got {limit}")
+
+        stmt = select(ChangeModel, SubjectModel.company, SubjectModel.product).join(
+            SubjectModel,
+            (ChangeModel.company_key == SubjectModel.company_key)
+            & (ChangeModel.product_key == SubjectModel.product_key),
+        )
+        if feed_filter is not None:
+            if feed_filter.company_key is not None:
+                stmt = stmt.where(ChangeModel.company_key == feed_filter.company_key)
+            if feed_filter.product_key is not None:
+                stmt = stmt.where(ChangeModel.product_key == feed_filter.product_key)
+            if feed_filter.field is not None:
+                stmt = stmt.where(ChangeModel.field == feed_filter.field)
+        if after is not None:
+            after_ts, after_id = after
+            stmt = stmt.where(
+                _CHANGES_KEYSET_PREDICATE_SQL.bindparams(after_ts=after_ts, after_id=after_id)
+            )
+
+        stmt = stmt.order_by(ChangeModel.detected_at.desc(), ChangeModel.id.desc()).limit(limit + 1)
+        res = await self._session.execute(stmt)
+        rows = res.all()
+
+        results: list[Change] = []
+        for change_row, company_name, product_name in rows:
+            prev_obs: FactObservation | None = None
+            if (
+                change_row.previous_snapshot_id is not None
+                or change_row.previous_observed_at is not None
+                or change_row.previous_value is not None
+            ):
+                prev_obs = FactObservation(
+                    value=change_row.previous_value,
+                    observed_at=change_row.previous_observed_at,
+                    snapshot_id=change_row.previous_snapshot_id,
+                )
+            curr_obs = FactObservation(
+                value=change_row.current_value,
+                observed_at=change_row.current_observed_at,
+                snapshot_id=change_row.current_snapshot_id,
+            )
+            results.append(
+                Change(
+                    id=change_row.id,
+                    change_set_id=change_row.change_set_id,
+                    subject=Subject(company=company_name, product=product_name),
+                    field=change_row.field,
+                    change_type=change_row.change_type,
+                    previous=prev_obs,
+                    current=curr_obs,
+                    confidence=change_row.confidence,
+                    detected_at=change_row.detected_at,
+                    review_status=change_row.review_status,
+                )
+            )
+        return results
+
+    async def list_digests(
+        self,
+        *,
+        feed_filter: DigestFeedFilter | None = None,
+        after: tuple[date, uuid.UUID] | None = None,
+        limit: int = 20,
+    ) -> Sequence[Digest]:
+        """Fetch up to limit + 1 published digests ordered by (digest_date DESC, id DESC) — ADR 0008.
+
+        IMPORTANT: Only digests with status='published' are returned, matching the
+        idx_digests_pagination partial index.
+
+        Args:
+            feed_filter: Optional filter criteria (start_date, end_date).
+            after: Keyset continuation tuple (digest_date, id), if resuming.
+            limit: Maximum items to return in the page (returns up to limit + 1
+                   to support forward cursor generation).
+
+        Returns:
+            A sequence of up to limit + 1 published Digest domain instances matching
+            the filters and keyset predicate.
+        """
+        if limit <= 0:
+            raise ValueError(f"limit must be positive, got {limit}")
+
+        stmt = select(DigestModel).where(DigestModel.status == DigestStatus.PUBLISHED.value)
+        if feed_filter is not None:
+            if feed_filter.start_date is not None:
+                stmt = stmt.where(DigestModel.digest_date >= feed_filter.start_date)
+            if feed_filter.end_date is not None:
+                stmt = stmt.where(DigestModel.digest_date <= feed_filter.end_date)
+        if after is not None:
+            after_date, after_id = after
+            stmt = stmt.where(
+                _DIGESTS_KEYSET_PREDICATE_SQL.bindparams(after_date=after_date, after_id=after_id)
+            )
+
+        stmt = stmt.order_by(DigestModel.digest_date.desc(), DigestModel.id.desc()).limit(limit + 1)
+        res = await self._session.execute(stmt)
+        digest_rows = list(res.scalars().all())
+        if not digest_rows:
+            return []
+
+        digest_ids = [d.id for d in digest_rows]
+        claims_stmt = (
+            select(DigestClaimModel)
+            .where(DigestClaimModel.digest_id.in_(digest_ids))
+            .order_by(DigestClaimModel.digest_id, DigestClaimModel.position.asc())
+        )
+        claims_res = await self._session.execute(claims_stmt)
+        claims_rows = list(claims_res.scalars().all())
+
+        claims_by_digest: dict[uuid.UUID, list[DigestClaimModel]] = {}
+        for c in claims_rows:
+            claims_by_digest.setdefault(c.digest_id, []).append(c)
+
+        citations_by_claim: dict[uuid.UUID, list[uuid.UUID]] = {}
+        if claims_rows:
+            claim_ids = [c.id for c in claims_rows]
+            citations_stmt = (
+                select(DigestClaimCitationModel)
+                .where(DigestClaimCitationModel.claim_id.in_(claim_ids))
+                .order_by(
+                    DigestClaimCitationModel.claim_id, DigestClaimCitationModel.position.asc()
+                )
+            )
+            cit_res = await self._session.execute(citations_stmt)
+            for cit in cit_res.scalars().all():
+                citations_by_claim.setdefault(cit.claim_id, []).append(cit.snapshot_id)
+
+        digests: list[Digest] = []
+        for d in digest_rows:
+            c_models = claims_by_digest.get(d.id, [])
+            digest_claims = [
+                DigestClaim(
+                    id=c.id,
+                    text=c.text,
+                    citation_snapshot_ids=citations_by_claim.get(c.id, []),
+                    validation_status=ClaimValidationStatus(c.validation_status),
+                )
+                for c in c_models
+            ]
+            digests.append(
+                Digest(
+                    id=d.id,
+                    digest_date=d.digest_date,
+                    status=DigestStatus(d.status),
+                    title=d.title,
+                    claims=digest_claims,
+                )
+            )
+        return digests
+
+
+PostgresChangeFeedRepository = PostgresFactStore
+PostgresDigestFeedRepository = PostgresFactStore
