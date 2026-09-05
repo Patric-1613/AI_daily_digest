@@ -368,5 +368,60 @@
       "api_update"
     ],
     "language": "en"
+  },
+  {
+    "id": "01a10b4a-9680-72b3-82a8-e2643510fa8e",
+    "dedupe_key": "sha256:mistral-codestral-256k-prompt-injection",
+    "source_id": "mistral_news",
+    "publisher": "Mistral AI",
+    "title": "Codestral expands context window to 256,000 tokens",
+    "canonical_url": "https://mistral.example.com/news/codestral-256k",
+    "published_at": "2026-10-05T09:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-10-05T09:15:00Z",
+    "latest_snapshot_id": "01a10b58-5220-7530-9ab7-b410f3502c3f",
+    "event_id": null,
+    "authors": [],
+    "tags": [
+      "model_release",
+      "api_update"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a12578-3f80-75a0-ac90-4e6d50f473da",
+    "dedupe_key": "sha256:anthropic-claude-pricing-url-migration",
+    "source_id": "anthropic_news",
+    "publisher": "Anthropic",
+    "title": "Claude 3.5 Haiku pricing update",
+    "canonical_url": "https://anthropic.example.org/news/claude-3-5-haiku-pricing-v2",
+    "published_at": "2026-10-10T11:00:00Z",
+    "updated_at": "2026-10-11T08:00:00Z",
+    "first_fetched_at": "2026-10-10T11:10:00Z",
+    "latest_snapshot_id": "01a129fe-63e0-7f22-8129-d2bdd3a92638",
+    "event_id": null,
+    "authors": [],
+    "tags": [
+      "api_update"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a1404a-b400-76c0-baaf-22a09b4bcadb",
+    "dedupe_key": "sha256:openai-o1-preview-malformed-fetch",
+    "source_id": "openai_news",
+    "publisher": "OpenAI",
+    "title": "OpenAI o1-preview announcement and technical specifications",
+    "canonical_url": "https://openai.example.org/news/o1-preview-specs",
+    "published_at": "2026-10-15T16:00:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-10-15T16:20:00Z",
+    "latest_snapshot_id": "01a1405d-0380-78a0-833e-f3c4cb643b62",
+    "event_id": null,
+    "authors": [],
+    "tags": [
+      "model_release"
+    ],
+    "language": "en"
   }
 ]
