@@ -428,9 +428,6 @@ async def test_list_digests_date_filtering(database_session: AsyncSession) -> No
     assert [d.id for d in from_digests] == [d3_id, d2_id]
 
     # 3. One-sided upper bound: date_to=2026-09-11 -> (-infinity, 2026-09-11)
-    to_digests = await repo.list_digests(
-        feed_filter=DigestFeedFilter(date_to=date(2026, 9, 11))
-    )
+    to_digests = await repo.list_digests(feed_filter=DigestFeedFilter(date_to=date(2026, 9, 11)))
     assert len(to_digests) == 1
     assert to_digests[0].id == d1_id
-
