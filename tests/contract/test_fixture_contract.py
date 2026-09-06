@@ -105,8 +105,12 @@ def test_change_previous_null_only_when_not_disclosed_is_the_intent() -> None:
     null_prev_changes = [ch for ch in all_changes if ch.previous is None]
     non_null_prev_changes = [ch for ch in all_changes if ch.previous is not None]
 
-    assert len(null_prev_changes) >= 1, "Expected at least one change with previous=None (first disclosure)"
-    assert len(non_null_prev_changes) >= 1, "Expected at least one change with a valid previous observation"
+    assert len(null_prev_changes) >= 1, (
+        "Expected at least one change with previous=None (first disclosure)"
+    )
+    assert len(non_null_prev_changes) >= 1, (
+        "Expected at least one change with a valid previous observation"
+    )
 
 
 def test_digest_claims_have_resolvable_citations() -> None:
@@ -196,7 +200,6 @@ def test_changed_url_revision_fixture_structure() -> None:
     changed_url_found = False
     for item_id, s_list in multi_snap_items.items():
         sorted_snaps = sorted(s_list, key=lambda s: s.fetched_at)
-        raw_locations = [s.raw_location for s in sorted_snaps]
         if any("moved to the new URL structure" in (s.content_text or "") for s in sorted_snaps):
             changed_url_found = True
             item = items[item_id]
@@ -220,4 +223,3 @@ def test_malformed_missing_evidence_fixture_structure() -> None:
         assert fact.disclosure_status == "not_disclosed"
         assert fact.value is None
         assert fact.quoted_span is not None and "not been disclosed" in fact.quoted_span
-

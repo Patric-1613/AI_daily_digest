@@ -909,4 +909,3 @@ def test_extract_facts_malformed_truncated_content_handling() -> None:
     assert facts_nd[0].field == "context_window_tokens"
     assert facts_nd[0].disclosure_status == DisclosureStatus.NOT_DISCLOSED
     assert facts_nd[0].value is None
-
