@@ -622,6 +622,10 @@ class PostgresFactStore:
                 stmt = stmt.where(ChangeModel.product_key == feed_filter.product_key)
             if feed_filter.field is not None:
                 stmt = stmt.where(ChangeModel.field == feed_filter.field)
+            if feed_filter.detected_from is not None:
+                stmt = stmt.where(ChangeModel.detected_at >= feed_filter.detected_from)
+            if feed_filter.detected_to is not None:
+                stmt = stmt.where(ChangeModel.detected_at < feed_filter.detected_to)
         if after is not None:
             after_ts, after_id = after
             stmt = stmt.where(
@@ -679,7 +683,7 @@ class PostgresFactStore:
         idx_digests_pagination partial index.
 
         Args:
-            feed_filter: Optional filter criteria (start_date, end_date).
+            feed_filter: Optional filter criteria (date_from, date_to).
             after: Keyset continuation tuple (digest_date, id), if resuming.
             limit: Maximum items to return in the page (returns up to limit + 1
                    to support forward cursor generation).
@@ -693,10 +697,10 @@ class PostgresFactStore:
 
         stmt = select(DigestModel).where(DigestModel.status == DigestStatus.PUBLISHED.value)
         if feed_filter is not None:
-            if feed_filter.start_date is not None:
-                stmt = stmt.where(DigestModel.digest_date >= feed_filter.start_date)
-            if feed_filter.end_date is not None:
-                stmt = stmt.where(DigestModel.digest_date <= feed_filter.end_date)
+            if feed_filter.date_from is not None:
+                stmt = stmt.where(DigestModel.digest_date >= feed_filter.date_from)
+            if feed_filter.date_to is not None:
+                stmt = stmt.where(DigestModel.digest_date < feed_filter.date_to)
         if after is not None:
             after_date, after_id = after
             stmt = stmt.where(

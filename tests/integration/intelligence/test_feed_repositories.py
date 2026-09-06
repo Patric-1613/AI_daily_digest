@@ -290,6 +290,24 @@ async def test_list_changes_filtering(database_session: AsyncSession) -> None:
     assert len(price_changes) == 1
     assert price_changes[0].id == ch2.id
 
+    # ADR 0008 half-open [from, to) range boundary tests for detected_from / detected_to:
+    # 1. Range [t1, t3): exact lower bound t1 is INCLUDED, exact upper bound t3 is EXCLUDED
+    range_changes = await repo.list_changes(
+        feed_filter=ChangeFeedFilter(detected_from=t1, detected_to=t3)
+    )
+    assert len(range_changes) == 2
+    assert {c.id for c in range_changes} == {ch1.id, ch2.id}
+
+    # 2. One-sided lower bound: detected_from=t2 -> [t2, infinity)
+    from_changes = await repo.list_changes(feed_filter=ChangeFeedFilter(detected_from=t2))
+    assert len(from_changes) == 2
+    assert {c.id for c in from_changes} == {ch2.id, ch3.id}
+
+    # 3. One-sided upper bound: detected_to=t2 -> (-infinity, t2)
+    to_changes = await repo.list_changes(feed_filter=ChangeFeedFilter(detected_to=t2))
+    assert len(to_changes) == 1
+    assert to_changes[0].id == ch1.id
+
 
 @pytest.mark.asyncio
 async def test_list_digests_only_published_and_pagination(
@@ -367,7 +385,7 @@ async def test_list_digests_only_published_and_pagination(
 
 @pytest.mark.asyncio
 async def test_list_digests_date_filtering(database_session: AsyncSession) -> None:
-    """Test DigestFeedRepository filters by start_date and end_date."""
+    """Test DigestFeedRepository filters by date_from and date_to (half-open [from, to))."""
     _, snap_id = await _create_snapshot(database_session)
     d1_id, d2_id, d3_id = new_id(), new_id(), new_id()
 
@@ -395,9 +413,24 @@ async def test_list_digests_date_filtering(database_session: AsyncSession) -> No
 
     repo = PostgresDigestFeedRepository(database_session)
 
-    filtered = await repo.list_digests(
-        feed_filter=DigestFeedFilter(start_date=date(2026, 9, 11), end_date=date(2026, 9, 11))
+    # 1. Range [2026-09-10, 2026-09-12): lower bound 9-10 is INCLUDED, upper bound 9-12 is EXCLUDED
+    filtered_range = await repo.list_digests(
+        feed_filter=DigestFeedFilter(date_from=date(2026, 9, 10), date_to=date(2026, 9, 12))
     )
-    assert len(filtered) == 1
-    assert filtered[0].id == d2_id
-    assert filtered[0].digest_date == date(2026, 9, 11)
+    assert len(filtered_range) == 2
+    assert [d.id for d in filtered_range] == [d2_id, d1_id]
+
+    # 2. One-sided lower bound: date_from=2026-09-11 -> [2026-09-11, infinity)
+    from_digests = await repo.list_digests(
+        feed_filter=DigestFeedFilter(date_from=date(2026, 9, 11))
+    )
+    assert len(from_digests) == 2
+    assert [d.id for d in from_digests] == [d3_id, d2_id]
+
+    # 3. One-sided upper bound: date_to=2026-09-11 -> (-infinity, 2026-09-11)
+    to_digests = await repo.list_digests(
+        feed_filter=DigestFeedFilter(date_to=date(2026, 9, 11))
+    )
+    assert len(to_digests) == 1
+    assert to_digests[0].id == d1_id
+

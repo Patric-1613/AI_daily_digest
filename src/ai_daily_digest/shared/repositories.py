@@ -30,19 +30,21 @@ class FeedFilter:
 
 @dataclass(frozen=True, slots=True)
 class ChangeFeedFilter:
-    """Canonical typed filter criteria for change feed queries — ADR 0008."""
+    """Canonical typed filter criteria for change feed queries — ADR 0008 §8."""
 
     company_key: str | None = None
     product_key: str | None = None
     field: str | None = None
+    detected_from: datetime | None = None
+    detected_to: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class DigestFeedFilter:
-    """Canonical typed filter criteria for digest feed queries — ADR 0008."""
+    """Canonical typed filter criteria for digest feed queries — ADR 0008 §8."""
 
-    start_date: date | None = None
-    end_date: date | None = None
+    date_from: date | None = None
+    date_to: date | None = None
 
 
 @runtime_checkable

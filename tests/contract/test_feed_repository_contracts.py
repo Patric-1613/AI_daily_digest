@@ -78,4 +78,4 @@ def test_feed_filters_are_frozen_dataclasses() -> None:
 
     f3 = DigestFeedFilter()
     with pytest.raises((AttributeError, TypeError)):
-        f3.start_date = None  # type: ignore[misc]
+        f3.date_from = None  # type: ignore[misc]
