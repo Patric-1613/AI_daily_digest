@@ -12,13 +12,19 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ai_daily_digest.ingestion.persistence import SourceItemMetadata
 from ai_daily_digest.ingestion.rss.parser import RssEntry
-from ai_daily_digest.ingestion.rss.url_policy import sanitize_url
+from ai_daily_digest.ingestion.rss.url_policy import (
+    UnsafeUrlError,
+    require_safe_url,
+    sanitize_url,
+)
 from ai_daily_digest.ingestion.service import FetchedDocument
 from ai_daily_digest.ingestion.sources import SourceDefinition
 
@@ -63,6 +69,44 @@ class EntryNormalizationError(Exception):
 def _is_tracking_param(name: str) -> bool:
     lowered = name.lower()
     return lowered in _TRACKING_PARAM_NAMES or lowered.startswith(_TRACKING_PARAM_PREFIXES)
+
+
+def _nfc_stripped(value: str) -> str:
+    """Unicode NFC normalization plus surrounding-whitespace trim -- the
+    shared first step of both list-normalization rules (ADR 0002 §10)."""
+    return unicodedata.normalize("NFC", value).strip()
+
+
+def normalize_authors(values: Iterable[str]) -> list[str]:
+    """The accepted ADR 0002 §10 author-list rule: NFC-normalize, trim,
+    drop empty, drop exact duplicates, **preserve first-seen order and
+    case**. Deterministic and reusable by any collector."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in values:
+        cleaned = _nfc_stripped(raw)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
+
+
+def normalize_tags(values: Iterable[str]) -> list[str]:
+    """The accepted ADR 0002 §10 tag-list rule: NFC-normalize, trim, drop
+    empty, **case-fold**, drop duplicates after case-folding, preserve
+    first-seen order. The stored value is the case-folded form (so a
+    later tag facet groups `Product` and `product`). Deterministic and
+    reusable by any collector."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in values:
+        cleaned = _nfc_stripped(raw).casefold()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
 
 
 def canonicalize_url(raw: str) -> str:
@@ -169,6 +213,18 @@ def normalize_entry(  # pylint: disable=too-many-arguments
     if not entry.title:
         raise EntryNormalizationError("entry has no <title>")
 
+    # The entry link is the provenance URL that will be stored, so it is
+    # held to the **same** fetch-safety policy as the feed URL and every
+    # redirect hop (`url_policy.require_safe_url`): HTTPS only, no
+    # `user:password@`, a parseable host on the source's allowlist. A
+    # violation fails this one entry (siblings continue); the message is
+    # already `sanitize_url`-redacted, so no credential or query secret
+    # leaks. This validates the URL only -- no article page is fetched.
+    try:
+        require_safe_url(entry.link, allowed_hosts=source.host_allowlist())
+    except UnsafeUrlError as exc:
+        raise EntryNormalizationError(f"unsafe entry link: {exc}") from exc
+
     canonical = canonicalize_url(entry.link)
     content = normalized_content(entry.title, entry.description)
     published_at = parse_published_at(entry.pub_date_raw)
@@ -178,8 +234,12 @@ def normalize_entry(  # pylint: disable=too-many-arguments
         "title": entry.title,
         "published_at": published_at,
         "updated_at": None,
-        "authors": [],  # OpenAI's RSS carries no <author>/<dc:creator>.
-        "tags": list(entry.categories),
+        # ADR 0002 §10 list normalization at the ingestion boundary.
+        # OpenAI's RSS carries no <author>/<dc:creator>, so this is
+        # normally empty -- the reusable rule still runs on whatever the
+        # parser found.
+        "authors": normalize_authors(entry.authors),
+        "tags": normalize_tags(entry.categories),
         "language": "en",
         "event_id": None,
     }

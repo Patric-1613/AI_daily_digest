@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title><![CDATA[OpenAI News]]></title>
+    <link>https://openai.com/news</link>
+    <atom:link href="https://openai.com/news/rss.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title><![CDATA[Valid leading entry]]></title>
+      <description><![CDATA[A well-formed entry that must be ingested.]]></description>
+      <link>https://openai.com/index/offsite-valid-leading</link>
+      <guid isPermaLink="true">https://openai.com/index/offsite-valid-leading</guid>
+      <pubDate>Mon, 25 Aug 2026 09:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Entry linking over plain HTTP]]></title>
+      <description><![CDATA[The link is http, not https; the source policy must reject it.]]></description>
+      <link>http://openai.com/index/insecure-entry</link>
+      <guid isPermaLink="true">http://openai.com/index/insecure-entry</guid>
+      <pubDate>Sun, 24 Aug 2026 10:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Entry linking to an off-domain host]]></title>
+      <description><![CDATA[The link host is not on the source allowlist and must be rejected.]]></description>
+      <link>https://newsroom.example/openai/leak?token=abc123</link>
+      <guid isPermaLink="true">https://newsroom.example/openai/leak?token=abc123</guid>
+      <pubDate>Sat, 23 Aug 2026 11:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Valid trailing entry]]></title>
+      <description><![CDATA[This sibling must still be ingested despite the failures above it.]]></description>
+      <link>https://openai.com/index/offsite-valid-trailing</link>
+      <guid isPermaLink="true">https://openai.com/index/offsite-valid-trailing</guid>
+      <pubDate>Wed, 20 Aug 2026 14:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

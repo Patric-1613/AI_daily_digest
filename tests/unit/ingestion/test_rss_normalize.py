@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import UTC, datetime
 
 import pytest
@@ -12,7 +13,9 @@ from ai_daily_digest.ingestion.rss.normalize import (
     canonicalize_url,
     content_hash,
     dedupe_key,
+    normalize_authors,
     normalize_entry,
+    normalize_tags,
     normalized_content,
     parse_published_at,
 )
@@ -33,6 +36,7 @@ def _entry(**overrides: object) -> RssEntry:
         "description": "GPT-4o now supports a 256,000 token context window.",
         "guid": "https://openai.com/index/gpt-4o-256k-context",
         "categories": ("Product", "API"),
+        "authors": (),
         "pub_date_raw": "Thu, 03 Sep 2026 13:15:00 GMT",
     }
     base.update(overrides)
@@ -165,7 +169,9 @@ def test_normalize_entry_maps_every_contract_field() -> None:
     assert document.collector_version == "openai-rss/test"
     assert document.metadata["publisher"] == "OpenAI"
     assert document.metadata["title"] == _entry().title
-    assert document.metadata["tags"] == ["Product", "API"]
+    # tags are case-folded (ADR 0002 §10); OpenAI's feed carries no authors.
+    assert document.metadata["tags"] == ["product", "api"]
+    assert document.metadata["authors"] == []
     assert document.metadata["published_at"] == datetime(2026, 9, 3, 13, 15, tzinfo=UTC)
 
 
@@ -179,11 +185,94 @@ def test_normalize_entry_requires_a_title() -> None:
         _normalize(_entry(title=None))
 
 
-def test_normalize_entry_rejects_a_link_with_userinfo() -> None:
-    with pytest.raises(EntryNormalizationError, match="user-info"):
-        _normalize(_entry(link="https://alice:pw@openai.com/index/x"))
-
-
 def test_normalize_entry_propagates_a_bad_pub_date() -> None:
     with pytest.raises(EntryNormalizationError):
         _normalize(_entry(pub_date_raw="yesterday-ish"))
+
+
+# -- Finding 2: entry link validated against the source policy ----------
+
+
+def test_normalize_entry_accepts_an_allowlisted_openai_link() -> None:
+    document = _normalize(_entry(link="https://openai.com/index/some-post"))
+    assert document.canonical_url == "https://openai.com/index/some-post"
+
+
+def test_normalize_entry_accepts_the_www_alias_on_the_allowlist() -> None:
+    document = _normalize(_entry(link="https://www.openai.com/index/some-post"))
+    assert document.canonical_url == "https://www.openai.com/index/some-post"
+
+
+def test_normalize_entry_rejects_an_http_openai_link() -> None:
+    with pytest.raises(EntryNormalizationError, match="https"):
+        _normalize(_entry(link="http://openai.com/index/x"))
+
+
+def test_normalize_entry_rejects_an_off_domain_https_link() -> None:
+    with pytest.raises(EntryNormalizationError, match="allowlist"):
+        _normalize(_entry(link="https://evil.example/index/x"))
+
+
+def test_normalize_entry_rejects_a_link_with_userinfo_without_echoing_it() -> None:
+    with pytest.raises(EntryNormalizationError) as excinfo:
+        _normalize(_entry(link="https://alice:s3cr3t@openai.com/index/x?api_key=leak"))
+    message = str(excinfo.value)
+    assert "user-info" in message
+    assert "s3cr3t" not in message
+    assert "alice" not in message
+    assert "api_key=leak" not in message
+
+
+def test_normalize_entry_rejects_a_malformed_link() -> None:
+    with pytest.raises(EntryNormalizationError):
+        _normalize(_entry(link="https://openai.com:notaport/x"))
+
+
+# -- Finding 1: ADR 0002 §10 list normalization ------------------------
+
+
+def test_normalize_tags_nfc_normalizes_composed_and_decomposed_equivalents() -> None:
+    composed = unicodedata.normalize("NFC", "caf\u00e9")
+    decomposed = unicodedata.normalize("NFD", composed)
+    assert composed != decomposed
+    assert normalize_tags(["  " + decomposed + "  ", composed]) == [composed]
+
+
+def test_normalize_tags_drops_empty_and_whitespace_only_values() -> None:
+    assert normalize_tags(["Product", "", "   ", "\t\n"]) == ["product"]
+
+
+def test_normalize_tags_casefolds_and_dedupes_after_casefolding() -> None:
+    assert normalize_tags(["Product", "product", "PRODUCT", "API", "api"]) == ["product", "api"]
+
+
+def test_normalize_tags_preserves_first_seen_order() -> None:
+    assert normalize_tags(["Zeta", "Alpha", "zeta", "Beta"]) == ["zeta", "alpha", "beta"]
+
+
+def test_normalize_tags_keeps_clean_openai_categories_working() -> None:
+    assert normalize_tags(("Product", "API", "Research")) == ["product", "api", "research"]
+
+
+def test_normalize_authors_preserves_case_and_first_seen_order() -> None:
+    assert normalize_authors(["Ada Lovelace", "  Alan Turing  ", "Ada Lovelace"]) == [
+        "Ada Lovelace",
+        "Alan Turing",
+    ]
+
+
+def test_normalize_authors_is_case_sensitive_unlike_tags() -> None:
+    # Same person written two ways is NOT deduped -- authors preserve case.
+    assert normalize_authors(["Ada Lovelace", "ada lovelace"]) == ["Ada Lovelace", "ada lovelace"]
+
+
+def test_normalize_authors_nfc_normalizes_drops_empty_and_dedupes() -> None:
+    composed = unicodedata.normalize("NFC", "Ren\u00e9e")
+    decomposed = unicodedata.normalize("NFD", composed)
+    assert composed != decomposed
+    assert normalize_authors(["  " + decomposed + "  ", composed, "", "  "]) == [composed]
+
+
+def test_normalize_entry_casefolds_and_dedupes_entry_categories() -> None:
+    document = _normalize(_entry(categories=("Product", "product", "Research")))
+    assert document.metadata["tags"] == ["product", "research"]

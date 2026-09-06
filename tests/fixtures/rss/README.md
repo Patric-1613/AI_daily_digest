@@ -19,6 +19,7 @@ live sites"; live-source smoke tests are a separate opt-in suite).
 | `openai_news_with_duplicate.xml` | Three entries where two canonicalize to the same URL with identical content — in-run deduplication. |
 | `openai_news_malformed_entry.xml` | Valid entries around ones with an empty `<link>` and an unparseable `<pubDate>` — per-entry failure isolation. |
 | `openai_news_bad_url_entry.xml` | Valid entries around ones with an invalid port and with `user:password@` credentials in the link — malformed-URL rejection and credential redaction. |
+| `openai_news_offsite_entry.xml` | Valid entries around ones whose link is plain `http` or an off-allowlist host — the entry link is held to the source's fetch-safety policy before it is stored. |
 | `openai_news_malformed_xml.xml` | Truncated, never-closed tags — a source-level parse failure. |
 | `openai_news_with_entity.xml` | A `<!DOCTYPE>` with a declared/referenced entity — `defusedxml` must refuse it. |
 | `openai_news_empty.xml` | A syntactically valid feed with zero `<item>` elements — the zero-item source anomaly. |

@@ -31,6 +31,9 @@ from defusedxml.ElementTree import fromstring as _defused_fromstring
 
 # The `content:encoded` element's fully-qualified name.
 _CONTENT_ENCODED = "{http://purl.org/rss/1.0/modules/content/}encoded"
+# The Dublin Core `dc:creator` element -- some feeds use it instead of
+# the plain RSS `<author>`.
+_DC_CREATOR = "{http://purl.org/dc/elements/1.1/}creator"
 
 
 class RssParseError(Exception):
@@ -40,7 +43,7 @@ class RssParseError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
-class RssEntry:
+class RssEntry:  # pylint: disable=too-many-instance-attributes
     """One `<item>` as read from the feed, before normalization. Every
     field is optional here; `normalize.py` enforces what a usable entry
     needs. `raw_index` is the item's 0-based position in the feed, used
@@ -52,6 +55,7 @@ class RssEntry:
     description: str | None
     guid: str | None
     categories: tuple[str, ...]
+    authors: tuple[str, ...]
     pub_date_raw: str | None
 
 
@@ -97,6 +101,15 @@ def _parse_entry(item: Element, index: int) -> RssEntry:
         guid=_text(item.find("guid")),
         categories=tuple(
             value for value in (_text(node) for node in item.findall("category")) if value
+        ),
+        # `<author>` and `<dc:creator>` in document order; normalization
+        # (trim / NFC / dedupe) is `normalize.py`'s job.
+        authors=tuple(
+            value
+            for value in (
+                _text(node) for node in (*item.findall("author"), *item.findall(_DC_CREATOR))
+            )
+            if value
         ),
         pub_date_raw=_text(item.find("pubDate")),
     )

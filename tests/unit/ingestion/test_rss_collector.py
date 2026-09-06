@@ -203,6 +203,31 @@ async def test_a_malformed_url_entry_fails_while_valid_siblings_continue() -> No
 
 
 @pytest.mark.asyncio
+async def test_entry_links_are_validated_against_the_source_policy() -> None:
+    """Finding 2: an entry whose link is http or off-domain fails this one
+    entry; valid siblings still persist, and nothing unsafe leaks."""
+    repository = InMemorySourceItemRepository()
+    report = await _collect(
+        FakeFetcher(_feed_response("openai_news_offsite_entry.xml")), repository
+    )
+
+    assert report.status is CollectionStatus.PARTIAL
+    assert report.fetched_entry_count == 4
+    # entry 1 (http) and entry 2 (off-domain host) fail; 0 and 3 persist.
+    assert report.created_item_count == 2
+    assert report.created_snapshot_count == 2
+    assert {failure.raw_index for failure in report.failures} == {1, 2}
+
+    # The rejected host/path may appear as diagnostics, but the query-string
+    # secret must not.
+    joined = " ".join(
+        f"{failure.reason} {failure.link} {failure.guid}" for failure in report.failures
+    )
+    assert "token=abc123" not in joined
+    assert "abc123" not in joined
+
+
+@pytest.mark.asyncio
 async def test_fetch_failure_is_reported_and_not_retried() -> None:
     repository = InMemorySourceItemRepository()
     fetcher = FakeFetcher(PermanentTransportError("HTTP 404 from https://openai.com/news/rss.xml"))

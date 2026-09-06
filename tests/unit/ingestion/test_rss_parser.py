@@ -42,6 +42,29 @@ def test_multiple_categories_are_collected_in_order() -> None:
     assert feed.entries[1].categories == ("Product",)
 
 
+def test_openai_sample_entries_carry_no_authors() -> None:
+    feed = parse_rss(load_fixture("openai_news_sample.xml"))
+
+    assert all(entry.authors == () for entry in feed.entries)
+
+
+def test_author_and_dc_creator_elements_are_collected_in_document_order() -> None:
+    body = (
+        b"<?xml version='1.0'?>"
+        b"<rss version='2.0' xmlns:dc='http://purl.org/dc/elements/1.1/'>"
+        b"<channel><title>t</title><item>"
+        b"<title>Entry</title>"
+        b"<link>https://openai.com/index/x</link>"
+        b"<author>Ada Lovelace</author>"
+        b"<dc:creator>Alan Turing</dc:creator>"
+        b"</item></channel></rss>"
+    )
+
+    feed = parse_rss(body)
+
+    assert feed.entries[0].authors == ("Ada Lovelace", "Alan Turing")
+
+
 def test_entries_keep_document_order_indices() -> None:
     feed = parse_rss(load_fixture("openai_news_sample.xml"))
 
