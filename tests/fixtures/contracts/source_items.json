@@ -396,7 +396,7 @@
     "title": "Claude 3.5 Haiku pricing update",
     "canonical_url": "https://anthropic.example.org/news/claude-3-5-haiku-pricing-v2",
     "published_at": "2026-10-10T11:00:00Z",
-    "updated_at": "2026-10-11T08:00:00Z",
+    "updated_at": "2026-10-11T08:05:00Z",
     "first_fetched_at": "2026-10-10T11:10:00Z",
     "latest_snapshot_id": "01a129fe-63e0-7f22-8129-d2bdd3a92638",
     "event_id": null,
@@ -421,6 +421,25 @@
     "authors": [],
     "tags": [
       "model_release"
+    ],
+    "language": "en"
+  },
+  {
+    "id": "01a074f9-3b5b-74a0-a399-02ae448b2243",
+    "dedupe_key": "sha256:openai-gpt4o-context-window-increase",
+    "source_id": "openai_news_syndicated",
+    "publisher": "TechNews Syndication",
+    "title": "OpenAI announces GPT-4o with multimodal intelligence",
+    "canonical_url": "https://syndicated.example.org/openai/gpt-4o-syndicated",
+    "published_at": "2026-06-02T09:05:00Z",
+    "updated_at": null,
+    "first_fetched_at": "2026-06-02T09:25:00Z",
+    "latest_snapshot_id": "01a074f9-3b5b-74a0-a399-02b3fc81e551",
+    "event_id": "ev-gpt4o-256k",
+    "authors": [],
+    "tags": [
+      "model_release",
+      "syndicated"
     ],
     "language": "en"
   }

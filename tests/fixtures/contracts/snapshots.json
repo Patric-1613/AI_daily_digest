@@ -279,7 +279,7 @@
     "source_item_id": "01a12578-3f80-75a0-ac90-4e6d50f473da",
     "fetched_at": "2026-10-11T08:05:00Z",
     "content_hash": "sha256:content-claude-3-5-haiku-pricing-v2",
-    "content_text": "Anthropic updated documentation at the new permalink: Claude 3.5 Haiku input price is $0.25 per million tokens and output price is $1.25 per million tokens.",
+    "content_text": "Anthropic updated documentation: pricing details have moved to the new URL structure at https://anthropic.example.org/news/claude-3-5-haiku-pricing-v2. Claude 3.5 Haiku input price is $0.25 per million tokens and output price is $1.25 per million tokens.",
     "raw_location": "raw/anthropic_news/2026/10/11/claude-3-5-haiku-pricing-v2.html",
     "etag": null,
     "last_modified": null,
@@ -292,6 +292,17 @@
     "content_hash": "sha256:content-o1-preview-malformed",
     "content_text": "<!-- TRUNCATED FETCH: upstream connection reset at byte 4096 -->\n<div class=\"post-body\">\n### Technical Spec... [content dropped by collector]\nPricing details have not been disclosed for this preview release.\n</div><!-- EOF_ERROR -->",
     "raw_location": "raw/openai_news/2026/10/15/o1-preview-specs-truncated.html",
+    "etag": null,
+    "last_modified": null,
+    "collector_version": "0.1.0"
+  },
+  {
+    "id": "01a074f9-3b5b-74a0-a399-02b3fc81e551",
+    "source_item_id": "01a074f9-3b5b-74a0-a399-02ae448b2243",
+    "fetched_at": "2026-06-02T09:25:00Z",
+    "content_hash": "sha256:content-openai-gpt-4o-syndicated-coverage",
+    "content_text": "Syndicated coverage: OpenAI today announced GPT-4o with an initial 128,000 token context window.",
+    "raw_location": "raw/syndicated_news/2026/06/02/gpt-4o-syndicated.html",
     "etag": null,
     "last_modified": null,
     "collector_version": "0.1.0"

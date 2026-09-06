@@ -861,3 +861,52 @@ def test_legitimate_fact_from_prompt_injection_snapshot_is_accepted() -> None:
     assert facts[1].value == "Apache-2.0"
     assert facts[1].quoted_span == "Licence terms remain Apache-2.0"
     assert facts[1].confidence == 0.98
+
+
+def test_extract_facts_malformed_truncated_content_handling() -> None:
+    """Proves extract_facts() guardrails safely handle malformed or truncated snapshot text:
+    if the LLM yields ungrounded candidates against garbled content or returns an empty list,
+    extract_facts() handles it cleanly without raising exceptions and returns only grounded facts or []."""
+    garbled_text = (
+        "OpenAI o1-preview announcement: Context window specifications have not been disclosed... "
+        "[TRUNCATED FETCH - 502 Bad Gateway - PARTIAL RESPONSE: 0x4f 0x6e]"
+    )
+    snap = _snapshot(garbled_text)
+    subject = Subject(company="OpenAI", product="o1-preview")
+
+    # Scenario A: LLM returns hallucinated fact quoting garbled/missing text -> rejected by grounding
+    def fake_call_hallucinated(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="128000",
+                    quoted_span="128,000 tokens standard context",  # Not in garbled text!
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    facts = extract_facts(subject, snap, call_fn=fake_call_hallucinated)
+    assert facts == []
+
+    # Scenario B: LLM returns legitimate non-disclosure fact grounded in intact part
+    def fake_call_nondisclosure(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value=None,
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+                    quoted_span="Context window specifications have not been disclosed",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    facts_nd = extract_facts(subject, snap, call_fn=fake_call_nondisclosure)
+    assert len(facts_nd) == 1
+    assert facts_nd[0].field == "context_window_tokens"
+    assert facts_nd[0].disclosure_status == DisclosureStatus.NOT_DISCLOSED
+    assert facts_nd[0].value is None
+

@@ -430,5 +430,20 @@
     "prompt_version": "fact-extraction-v1",
     "quoted_span": "Pricing details have not been disclosed for this preview release",
     "confidence": 0.95
+  },
+  {
+    "id": "01a074f9-3b5b-74a0-a399-02c79abc3af9",
+    "snapshot_id": "01a074f9-3b5b-74a0-a399-02b3fc81e551",
+    "company": "OpenAI",
+    "product": "GPT-4o",
+    "field": "context_window_tokens",
+    "value": "128000",
+    "disclosure_status": "disclosed",
+    "quoted_span": "128,000 token context window",
+    "confidence": 0.95,
+    "extraction_method": "llm_structured_output",
+    "extraction_model": "claude-haiku-4-5",
+    "prompt_version": "v1.2",
+    "observed_at": "2026-06-02T09:25:00Z"
   }
 ]

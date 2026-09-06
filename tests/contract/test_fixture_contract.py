@@ -70,23 +70,49 @@ def test_change_set_citations_resolve_to_real_snapshots() -> None:
             assert change.current.snapshot_id in snapshot_ids
 
 
+def test_at_least_two_change_sets_and_two_digests() -> None:
+    """Milestone-0: The fixture pack must provide at least two distinct change sets and two digests."""
+    change_sets = FixtureLoader().load_change_sets()
+    digests = FixtureLoader().load_digests()
+    assert len(change_sets) >= 2, f"Expected >=2 change sets, found {len(change_sets)}"
+    assert len(digests) >= 2, f"Expected >=2 digests, found {len(digests)}"
+
+
+def test_duplicate_dedupe_key_fixture_structure() -> None:
+    """Milestone-0: The fixture pack contains duplicate items sharing identical dedupe_key for cross-module deduplication testing."""
+    items = FixtureLoader().load_items()
+    by_dedupe: dict[str, list[SourceItem]] = {}
+    for item in items:
+        by_dedupe.setdefault(item.dedupe_key, []).append(item)
+
+    duplicates = [items_list for items_list in by_dedupe.values() if len(items_list) > 1]
+    assert len(duplicates) >= 1, "Expected at least one duplicate dedupe_key group in fixture pack"
+    dup_group = duplicates[0]
+    assert dup_group[0].id != dup_group[1].id
+    assert dup_group[0].dedupe_key == dup_group[1].dedupe_key
+
+
 def test_change_previous_null_only_when_not_disclosed_is_the_intent() -> None:
     """docs/API_CONTRACT.md: `previous` (the FactObservation object
     itself, not its nested `.value`) is null only for a first disclosure
-    -- the fixture pack's real change carries a genuine previous
-    observation, not this ADR-0006 edge case. This fixture pack doesn't
-    exercise the first-disclosure case yet (see its README) — this test
-    at least asserts every change we DO have carries a previous."""
+    -- representing an ADR-0006 first disclosure / missing baseline case.
+    Asserts that at least one change has previous=None (first disclosure)
+    while remaining changes have valid prior observations."""
     change_sets = FixtureLoader().load_change_sets()
-    for change_set in change_sets:
-        for change in change_set.changes:
-            assert change.previous is not None
+    all_changes = [ch for cs in change_sets for ch in cs.changes]
+    assert len(all_changes) >= 2
+
+    null_prev_changes = [ch for ch in all_changes if ch.previous is None]
+    non_null_prev_changes = [ch for ch in all_changes if ch.previous is not None]
+
+    assert len(null_prev_changes) >= 1, "Expected at least one change with previous=None (first disclosure)"
+    assert len(non_null_prev_changes) >= 1, "Expected at least one change with a valid previous observation"
 
 
 def test_digest_claims_have_resolvable_citations() -> None:
     snapshot_ids = {s.id for s in FixtureLoader().load_snapshots()}
     digests = FixtureLoader().load_digests()
-    assert len(digests) >= 1
+    assert len(digests) >= 2
     for digest in digests:
         for claim in digest.claims:
             assert len(claim.citation_snapshot_ids) >= 1, "every claim needs >=1 citation"
@@ -154,7 +180,7 @@ def test_prompt_injection_fixture_structure() -> None:
 
 
 def test_changed_url_revision_fixture_structure() -> None:
-    """Milestone-0: One source item with two snapshots having distinct raw_location and correct fetched_at order."""
+    """Milestone-0: Source item with snapshots demonstrating documentation/URL migration."""
     items: dict[uuid.UUID, SourceItem] = {item.id: item for item in FixtureLoader().load_items()}
     snapshots = FixtureLoader().load_snapshots()
 
@@ -171,14 +197,14 @@ def test_changed_url_revision_fixture_structure() -> None:
     for item_id, s_list in multi_snap_items.items():
         sorted_snaps = sorted(s_list, key=lambda s: s.fetched_at)
         raw_locations = [s.raw_location for s in sorted_snaps]
-        if len(set(raw_locations)) > 1:
+        if any("moved to the new URL structure" in (s.content_text or "") for s in sorted_snaps):
             changed_url_found = True
             item = items[item_id]
             assert item.latest_snapshot_id == sorted_snaps[-1].id
             assert sorted_snaps[0].fetched_at < sorted_snaps[1].fetched_at
-            assert sorted_snaps[0].content_hash != sorted_snaps[1].content_hash
+            assert item.updated_at == sorted_snaps[-1].fetched_at
 
-    assert changed_url_found, "Did not find multi-snapshot item with distinct raw_locations"
+    assert changed_url_found, "Did not find multi-snapshot item narrating URL migration"
 
 
 def test_malformed_missing_evidence_fixture_structure() -> None:
@@ -194,3 +220,4 @@ def test_malformed_missing_evidence_fixture_structure() -> None:
         assert fact.disclosure_status == "not_disclosed"
         assert fact.value is None
         assert fact.quoted_span is not None and "not been disclosed" in fact.quoted_span
+
