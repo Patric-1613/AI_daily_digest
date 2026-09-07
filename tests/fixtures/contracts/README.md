@@ -66,12 +66,18 @@ digests over normalized URLs and fetched bytes.
 - `Item 23 (Malformed snapshot / non-disclosure)` — OpenAI o1-preview announcement
   contains truncated HTML fragment markup combined with an explicit non-disclosure fact
   for context window specifications.
-- `Item 24 (Duplicate input)` — Syndicated coverage of OpenAI GPT-4o sharing an identical
-  `dedupe_key` (`sha256:openai-gpt4o-launch-context-window`) with Item 1 to exercise deduplication logic across modules.
+- `Item 24 (Syndicated coverage / unique dedupe key)` — Syndicated coverage of OpenAI GPT-4o with distinct canonical URL (`https://syndicated.example.org/openai/gpt-4o-syndicated`) and distinct `dedupe_key` (`sha256:openai-gpt4o-syndicated-coverage`), preserving schema validity and the PostgreSQL database `UniqueConstraint("dedupe_key")` across all 24 persisted items.
 - `change_sets.json` — two distinct `ChangeSet` records:
   1. OpenAI GPT-4o context window increase (`128000` -> `256000`), with full previous and current provenance.
   2. Google Gemini 1.5 Pro input price decrease (`$3.50` -> `$1.75`) alongside a first-disclosure context window change (`previous: null`, representing ADR 0006's baseline first disclosure without historical evidence).
 - `digests.json` — two distinct `Digest` records across different calendar dates (`2026-08-20` and `2026-09-02`), each with validated claims grounded by snapshot citations.
 - `extracted_facts.json` — 37 `ExtractedFact` records (all 28 snapshots have >= 1 associated fact). All facts use fields from `COMPARABLE_FIELDS` (`context_window_tokens`, `input_price_usd`, `benchmark_scores`, `licence_terms`), recording `quoted_span`, `confidence`, `extraction_model`, and `prompt_version` per ADR 0004.
 
+## Boundary Distinction: Persisted Records vs. Pre-Ingestion Raw Candidates
 
+This directory enforces a strict architectural boundary between post-ingestion persisted records and pre-ingestion candidate inputs:
+
+- **`source_items.json` (Normalized, Persisted Records)**: Represents post-ingestion records stored in the database. Every item has a strictly unique `dedupe_key` matching the real PostgreSQL database constraint (`SourceItemRow.dedupe_key` `UniqueConstraint("dedupe_key")`). No duplicate dedupe keys exist in this pack.
+- **`raw_candidates.json` (Pre-Ingestion Raw Inputs)**: Models candidate entries as they arrive from raw feeds *before* ingestion normalization:
+  1. **Duplicate-candidate pair**: Raw entries differing only by tracking query parameters (`https://openai.example.com/news/gpt-4o?utm_source=rss&ref=feed` vs `https://openai.example.com/news/gpt-4o`) that `canonicalize_url()` and `dedupe_key()` collapse to an identical `dedupe_key`, proving convergence occurs at ingestion time rather than leaving duplicates in persisted storage.
+  2. **Changed-URL candidate pair**: Raw entries modeling URL drift across protocol (`http://anthropic.example.org/news/claude-3-5-haiku-v1/` vs `https://anthropic.example.org/news/claude-3-5-haiku-v1`) and trailing slashes that normalize deterministically to expected canonical forms and dedupe keys.

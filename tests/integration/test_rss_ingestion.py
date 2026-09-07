@@ -242,7 +242,9 @@ async def test_collect_with_real_infrastructure_builds_its_own_engine(
     `collect_openai_rss` -> engine disposed. Runs against its own
     run-unique migrated database (not the shared session fixture's), and
     only the fetcher is faked."""
-    base_url = os.environ["DATABASE_URL"]
+    base_url = os.environ.get("DATABASE_URL")
+    if not base_url:
+        pytest.skip("set DATABASE_URL to run PostgreSQL integration tests")
     isolated_url = await create_temporary_database(base_url)
     await run_alembic_async(database_url=isolated_url, target="head")
     monkeypatch.setenv("DATABASE_URL", isolated_url)

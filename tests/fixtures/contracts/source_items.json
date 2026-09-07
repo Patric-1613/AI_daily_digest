@@ -426,7 +426,7 @@
   },
   {
     "id": "01a074f9-3b5b-74a0-a399-02ae448b2243",
-    "dedupe_key": "sha256:openai-gpt4o-context-window-increase",
+    "dedupe_key": "sha256:openai-gpt4o-syndicated-coverage",
     "source_id": "openai_news_syndicated",
     "publisher": "TechNews Syndication",
     "title": "OpenAI announces GPT-4o with multimodal intelligence",

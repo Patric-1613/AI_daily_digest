@@ -6,12 +6,14 @@ pack — it's what verifies intelligence's loader can actually consume what
 docs/API_CONTRACT.md promises.
 """
 
+import json
 import uuid
 
 import pytest
 
+from ai_daily_digest.ingestion.rss.normalize import canonicalize_url, dedupe_key
 from ai_daily_digest.intelligence.grounding import value_supported_by_quote
-from ai_daily_digest.intelligence.loaders import FixtureLoader
+from ai_daily_digest.intelligence.loaders import FIXTURES_DIR, FixtureLoader
 from ai_daily_digest.shared.schemas import DocumentSnapshot, SourceItem
 
 pytestmark = pytest.mark.contract
@@ -22,6 +24,9 @@ def test_source_items_are_schema_valid() -> None:
     assert len(items) >= 1
     ids = [item.id for item in items]
     assert len(ids) == len(set(ids)), "duplicate item ids in fixtures"
+    assert len(set(i.dedupe_key for i in items)) == len(items), (
+        "persisted records must have unique dedupe_key matching database constraints"
+    )
 
 
 def test_snapshots_are_schema_valid_and_reference_real_items() -> None:
@@ -78,18 +83,62 @@ def test_at_least_two_change_sets_and_two_digests() -> None:
     assert len(digests) >= 2, f"Expected >=2 digests, found {len(digests)}"
 
 
-def test_duplicate_dedupe_key_fixture_structure() -> None:
-    """Milestone-0: The fixture pack contains duplicate items sharing identical dedupe_key for cross-module deduplication testing."""
-    items = FixtureLoader().load_items()
-    by_dedupe: dict[str, list[SourceItem]] = {}
-    for item in items:
-        by_dedupe.setdefault(item.dedupe_key, []).append(item)
+# Note: canonicalize_url() and dedupe_key() currently come from
+# ingestion.rss.normalize (RSS is the only implemented source type today)
+# and this import may need to generalize once a second source type with its
+# own normalization lands.
+def test_raw_candidate_duplicate_deduplication() -> None:
+    """Pre-ingestion duplicate candidate entries differ only by tracking params,
+    collapsing to the identical dedupe_key via real canonicalize_url()/dedupe_key()."""
+    path = FIXTURES_DIR / "raw_candidates.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    candidates = data["duplicate_pair"]["candidates"]
+    assert len(candidates) == 2
 
-    duplicates = [items_list for items_list in by_dedupe.values() if len(items_list) > 1]
-    assert len(duplicates) >= 1, "Expected at least one duplicate dedupe_key group in fixture pack"
-    dup_group = duplicates[0]
-    assert dup_group[0].id != dup_group[1].id
-    assert dup_group[0].dedupe_key == dup_group[1].dedupe_key
+    raw_a = candidates[0]["raw_url"]
+    raw_b = candidates[1]["raw_url"]
+    assert raw_a != raw_b, "duplicate-candidate raw links should differ by tracking parameters"
+
+    # Call real canonicalize_url() and dedupe_key() from ingestion.rss.normalize
+    canon_a = canonicalize_url(raw_a)
+    canon_b = canonicalize_url(raw_b)
+    assert canon_a == canon_b, "tracking query parameters must be stripped during canonicalization"
+
+    key_a = dedupe_key(canon_a)
+    key_b = dedupe_key(canon_b)
+    assert key_a == key_b, "duplicate-candidate entries must collapse to identical dedupe_key"
+
+
+def test_raw_candidate_changed_url_lineage() -> None:
+    """Pre-ingestion candidate entries model URL drift (protocol + trailing slash),
+    normalizing deterministically to expected canonical forms and matching dedupe keys."""
+    # Note: canonicalize_url() and dedupe_key() currently come from
+    # ingestion.rss.normalize (RSS is the only implemented source type today)
+    # and this import may need to generalize once a second source type with its
+    # own normalization lands.
+    path = FIXTURES_DIR / "raw_candidates.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    candidates = data["changed_url_pair"]["candidates"]
+    assert len(candidates) == 2
+
+    v1 = candidates[0]
+    v2 = candidates[1]
+
+    # Verify candidate 1 (http + trailing slash) normalizes deterministically
+    canon_v1 = canonicalize_url(v1["raw_url"])
+    assert canon_v1 == v1["expected_canonical_url"]
+    key_v1 = dedupe_key(canon_v1)
+    assert key_v1 == v1["expected_dedupe_key"]
+
+    # Verify candidate 2 (https without trailing slash) normalizes deterministically
+    canon_v2 = canonicalize_url(v2["raw_url"])
+    assert canon_v2 == v2["expected_canonical_url"]
+    key_v2 = dedupe_key(canon_v2)
+    assert key_v2 == v2["expected_dedupe_key"]
+
+    # Protocol difference is preserved, yielding distinct dedupe keys across version lineage
+    assert canon_v1 != canon_v2
+    assert key_v1 != key_v2
 
 
 def test_change_previous_null_only_when_not_disclosed_is_the_intent() -> None:
