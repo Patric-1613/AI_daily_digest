@@ -96,6 +96,12 @@ sources:
     url: https://pypi.org/rss/project/langchain/releases.xml
     priority: 0
     cadence_minutes: 360
+    # PyPI's release feed and every entry link live on pypi.org (verified
+    # in the Day-4 preflight). Stated explicitly, matching openai_news, so
+    # the SSRF/allowlist guard is visible per source and cannot be widened
+    # by an accidental feed-URL edit.
+    allowed_hosts:
+      - pypi.org
 
   - id: langgraph_pypi
     publisher: Python Package Index
@@ -104,6 +110,8 @@ sources:
     url: https://pypi.org/rss/project/langgraph/releases.xml
     priority: 1
     cadence_minutes: 360
+    allowed_hosts:
+      - pypi.org
 
   - id: deepagents_pypi
     publisher: Python Package Index

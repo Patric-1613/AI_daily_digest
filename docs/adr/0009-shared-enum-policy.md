@@ -140,9 +140,10 @@ module-local enum:
   unimplemented collectors are not marked complete anywhere.
 - **Runtime dispatch must fail clearly for a category with no adapter.** A collection run that
   reaches a registered source whose `SourceType` has no implemented collector must raise an
-  explicit error, never silently skip or mishandle it. `collect_openai_rss` already guards this
-  (`if source.type is not SourceType.RSS: raise ValueError(...)`); the future multi-source
-  dispatch layer carries the same obligation.
+  explicit error, never silently skip or mishandle it. The RSS adapter guards this
+  (`collect_rss_source` raises `ValueError` for a non-RSS `SourceDefinition`; the `collect-rss`
+  command rejects a non-RSS `--source-id` before any database connection). Any later
+  HTML/changelog/GitHub-API adapter carries the same obligation.
 - **Adding a new adapter category is a reviewed change** to both the `SourceType` enum and
   `sources.yaml`, exactly as sections 1 and 7 require for any closed application-owned set.
 

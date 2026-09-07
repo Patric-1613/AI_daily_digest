@@ -1,4 +1,4 @@
-"""The OpenAI RSS collector against the real `PostgresSourceItemRepository`
+"""The generic RSS collector against the real `PostgresSourceItemRepository`
 and a real PostgreSQL database (`ingestion/rss/collector.py` +
 docs/adr/0002-postgres-pgvector.md sections 8, 9, 13).
 
@@ -6,7 +6,8 @@ Proves the persistence-orchestration rules the in-memory collector unit
 tests can only approximate: a first run inserts an item and a snapshot,
 an identical rerun inserts neither, and a genuine content change at the
 same canonical URL adds a second immutable snapshot and advances the
-latest-snapshot pointer.
+latest-snapshot pointer -- for `openai_news` and for the `langchain_pypi`
+/ `langgraph_pypi` sources driven through the same adapter.
 
 Skips automatically when no test database is configured (see
 `tests/integration/conftest.py`); it is never marked passed in that
@@ -30,7 +31,7 @@ from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemR
 from ai_daily_digest.ingestion.rss.collector import (
     CollectionReport,
     CollectionStatus,
-    collect_openai_rss,
+    collect_rss_source,
 )
 from ai_daily_digest.ingestion.rss.run import (
     collect_with_real_infrastructure,
@@ -90,7 +91,7 @@ def _bound_session_factory(
 
 
 async def _collect(session: AsyncSession, fixture: str) -> CollectionReport:
-    return await collect_openai_rss(
+    return await collect_rss_source(
         source=_SOURCE,
         policy=build_policy(),
         fetcher=FakeFetcher(_feed_response(fixture)),
@@ -219,6 +220,7 @@ async def test_composition_root_run_collection_against_real_db(
     `openai_news` selection, real `PostgresSourceItemRepository` -- drives
     a full run end to end. Only the fetcher is faked (no live network)."""
     report = await run_collection(
+        source_id="openai_news",
         fetcher=FakeFetcher(_feed_response("openai_news_sample.xml")),
         session_factory=_bound_session_factory(database_session),
     )
@@ -237,9 +239,9 @@ async def test_composition_root_run_collection_against_real_db(
 async def test_collect_with_real_infrastructure_builds_its_own_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Correction 5, the outer glue: `DATABASE_URL` -> `DatabaseConfig`
-    -> shared `build_engine`/`build_session_factory` -> preflight ->
-    `collect_openai_rss` -> engine disposed. Runs against its own
+    """The outer glue: `DATABASE_URL` -> `DatabaseConfig` -> shared
+    `build_engine`/`build_session_factory` -> preflight ->
+    `collect_rss_source` -> engine disposed. Runs against its own
     run-unique migrated database (not the shared session fixture's), and
     only the fetcher is faked."""
     base_url = os.environ["DATABASE_URL"]
@@ -248,6 +250,7 @@ async def test_collect_with_real_infrastructure_builds_its_own_engine(
     monkeypatch.setenv("DATABASE_URL", isolated_url)
     try:
         report = await collect_with_real_infrastructure(
+            "openai_news",
             fetcher=FakeFetcher(_feed_response("openai_news_sample.xml")),
         )
     finally:
@@ -256,3 +259,108 @@ async def test_collect_with_real_infrastructure_builds_its_own_engine(
     assert report.status is CollectionStatus.OK
     assert report.created_item_count == 4
     assert report.created_snapshot_count == 4
+
+
+# -- Day 4: the same adapter, driven for each new PyPI source ----------
+
+_PYPI_SAMPLE = {
+    "langchain_pypi": "pypi_langchain_sample.xml",
+    "langgraph_pypi": "pypi_langgraph_sample.xml",
+}
+
+
+async def _pypi_urls(session: AsyncSession, source_id: str) -> list[str]:
+    return list(
+        (
+            await session.execute(
+                select(SourceItemRow.canonical_url).where(SourceItemRow.source_id == source_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_id", list(_PYPI_SAMPLE))
+async def test_pypi_source_first_run_persists_through_the_generic_adapter(
+    source_id: str, database_session: AsyncSession
+) -> None:
+    report = await run_collection(
+        source_id=source_id,
+        fetcher=FakeFetcher(_feed_response(_PYPI_SAMPLE[source_id])),
+        session_factory=_bound_session_factory(database_session),
+    )
+
+    assert report.source_id == source_id
+    assert report.status is CollectionStatus.OK
+    assert report.created_item_count == report.created_snapshot_count == 3
+
+    rows = (
+        (
+            await database_session.execute(
+                select(SourceItemRow).where(SourceItemRow.source_id == source_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 3
+    assert {row.publisher for row in rows} == {"Python Package Index"}
+    assert all(row.canonical_url.startswith("https://pypi.org/project/") for row in rows)
+    assert all(row.latest_snapshot_id is not None for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_pypi_source_rerun_is_idempotent_and_change_adds_one_snapshot(
+    database_session: AsyncSession,
+) -> None:
+    async def _run(fixture: str) -> CollectionReport:
+        return await run_collection(
+            source_id="langchain_pypi",
+            fetcher=FakeFetcher(_feed_response(fixture)),
+            session_factory=_bound_session_factory(database_session),
+        )
+
+    first = await _run("pypi_langchain_sample.xml")
+    assert first.created_item_count == first.created_snapshot_count == 3
+
+    rerun = await _run("pypi_langchain_sample.xml")
+    assert rerun.created_item_count == 0
+    assert rerun.created_snapshot_count == 0
+    assert rerun.unchanged_count == 3
+
+    changed = await _run("pypi_langchain_changed.xml")
+    assert changed.created_item_count == 0
+    assert changed.created_snapshot_count == 1
+    assert changed.unchanged_count == 2
+
+    urls = await _pypi_urls(database_session, "langchain_pypi")
+    assert len(urls) == 3  # no duplicate SourceItem
+    total_snapshots = await database_session.scalar(
+        select(func.count())
+        .select_from(DocumentSnapshotRow)
+        .join(SourceItemRow, DocumentSnapshotRow.source_item_id == SourceItemRow.id)
+        .where(SourceItemRow.source_id == "langchain_pypi")
+    )
+    assert total_snapshots == 4  # 3 originals + 1 new immutable snapshot
+
+
+@pytest.mark.asyncio
+async def test_off_domain_pypi_entry_fails_without_a_false_success(
+    database_session: AsyncSession,
+) -> None:
+    report = await run_collection(
+        source_id="langchain_pypi",
+        fetcher=FakeFetcher(_feed_response("pypi_langchain_offsite_entry.xml")),
+        session_factory=_bound_session_factory(database_session),
+    )
+
+    # One entry off the pypi.org allowlist -> PARTIAL, never OK.
+    assert report.status is CollectionStatus.PARTIAL
+    assert report.created_item_count == 2
+    assert report.failed_item_count == 1
+    assert report.failures[0].raw_index == 1
+    joined = f"{report.failures[0].reason} {report.failures[0].link}"
+    assert "token=abc123" not in joined
+    assert len(await _pypi_urls(database_session, "langchain_pypi")) == 2
