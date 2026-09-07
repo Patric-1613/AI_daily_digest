@@ -3,7 +3,7 @@
     "id": "01a02054-7100-7b00-95b6-3de3c6554a8d",
     "digest_date": "2026-08-20",
     "status": "published",
-    "title": "AI Daily Digest — 20 August 2026",
+    "title": "AI Daily Digest \u2014 20 August 2026",
     "claims": [
       {
         "id": "01a02054-7100-7201-b0db-1840b091df02",
@@ -17,7 +17,34 @@
       {
         "id": "01a02054-74e8-73d3-8912-aff93b0bd0ae",
         "text": "Anthropic's Claude has not disclosed its context window in this update, so it cannot be compared to GPT-4o's on that dimension.",
-        "citation_snapshot_ids": ["01a01a5b-82c0-7163-b557-1246abccd49d"],
+        "citation_snapshot_ids": [
+          "01a01a5b-82c0-7163-b557-1246abccd49d"
+        ],
+        "validation_status": "supported"
+      }
+    ]
+  },
+  {
+    "id": "01a074f9-3b5b-74a0-a399-03014296a928",
+    "digest_date": "2026-09-02",
+    "status": "published",
+    "title": "AI Daily Digest \u2014 2 September 2026",
+    "claims": [
+      {
+        "id": "01a074f9-3b5b-74a0-a399-0314a648fbeb",
+        "text": "Google reduced Gemini 1.5 Pro input price to $1.75 per million tokens, down from $3.50.",
+        "citation_snapshot_ids": [
+          "01a006ab-8860-79f3-b063-70e05b6d2baa",
+          "019f0933-8840-7353-8d3b-8cf409e24a85"
+        ],
+        "validation_status": "supported"
+      },
+      {
+        "id": "01a074f9-3b5c-7be3-b470-ada092e2b629",
+        "text": "Google disclosed a 2,000,000 token context window for Gemini 1.5 Pro.",
+        "citation_snapshot_ids": [
+          "01a006ab-8860-79f3-b063-70e05b6d2baa"
+        ],
         "validation_status": "supported"
       }
     ]

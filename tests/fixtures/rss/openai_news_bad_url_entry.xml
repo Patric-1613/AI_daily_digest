@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title><![CDATA[OpenAI News]]></title>
+    <link>https://openai.com/news</link>
+    <atom:link href="https://openai.com/news/rss.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title><![CDATA[Valid leading entry]]></title>
+      <description><![CDATA[A well-formed entry that must be ingested.]]></description>
+      <link>https://openai.com/index/valid-leading-entry</link>
+      <guid isPermaLink="true">https://openai.com/index/valid-leading-entry</guid>
+      <pubDate>Mon, 25 Aug 2026 09:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Entry with an invalid port in its link]]></title>
+      <description><![CDATA[The link has a non-numeric port; canonicalization must reject it.]]></description>
+      <link>https://openai.com:notaport/index/bad-port-entry</link>
+      <guid isPermaLink="true">https://openai.com:notaport/index/bad-port-entry</guid>
+      <pubDate>Sun, 24 Aug 2026 10:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Entry whose link carries embedded credentials]]></title>
+      <description><![CDATA[user:password@ user-info must be refused and must not leak into the report.]]></description>
+      <link>https://alice:s3cr3t-token@openai.com/index/credential-entry?api_key=leakme</link>
+      <guid isPermaLink="false">urn:openai:credential-entry</guid>
+      <pubDate>Sat, 23 Aug 2026 11:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Valid trailing entry]]></title>
+      <description><![CDATA[This sibling must still be ingested despite the failures above it.]]></description>
+      <link>https://openai.com/index/valid-trailing-entry</link>
+      <guid isPermaLink="true">https://openai.com/index/valid-trailing-entry</guid>
+      <pubDate>Wed, 20 Aug 2026 14:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

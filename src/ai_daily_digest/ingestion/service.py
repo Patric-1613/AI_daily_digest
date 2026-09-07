@@ -50,13 +50,23 @@ class FetchedDocument:  # pylint: disable=too-many-instance-attributes
 
 @dataclass(frozen=True)
 class IngestResult:
-    """What one `ingest_document()` call produced. `advanced` is exactly
-    `advance_latest_snapshot_and_metadata`'s own return value when it
-    ran, or `False` when step 3 never ran at all (no new snapshot was
-    inserted -- section 13's Phase-1 limitation)."""
+    """What one `ingest_document()` call produced.
+
+    `item_created` / `snapshot_created` say whether this call inserted a
+    new row versus finding an existing one -- derived from whether the
+    id generated up front came back (a found row always carries a
+    different, older id). A collection-run report needs both counts, and
+    there is no other way to learn them from the write protocol's
+    return values.
+
+    `advanced` is exactly `advance_latest_snapshot_and_metadata`'s own
+    return value when it ran, or `False` when step 3 never ran at all
+    (no new snapshot was inserted -- section 13's Phase-1 limitation)."""
 
     source_item: SourceItem
     snapshot: DocumentSnapshot
+    item_created: bool
+    snapshot_created: bool
     advanced: bool
 
 
@@ -80,14 +90,16 @@ async def ingest_document(
     function, which only guarantees a clean, fully-rolled-back failure.
     """
     try:
+        candidate_item_id = new_id()
         source_item = await repository.find_or_create_source_item(
-            item_id=new_id(),
+            item_id=candidate_item_id,
             dedupe_key=document.dedupe_key,
             source_id=document.source_id,
             canonical_url=document.canonical_url,
             first_fetched_at=document.first_fetched_at,
             metadata=document.metadata,
         )
+        item_created = source_item.id == candidate_item_id
 
         # A candidate id generated up front: add_snapshot_if_new()
         # returns this exact id back only when it actually inserted a
@@ -109,12 +121,13 @@ async def ingest_document(
             collector_version=document.collector_version,
         )
 
+        snapshot_created = snapshot.id == candidate_snapshot_id
         advanced = False
         # Section 13 step 3: "If, and only if, a new snapshot was
         # inserted" -- a duplicate-content fetch never reaches this call
         # at all (the documented Phase-1 limitation: metadata is not
         # independently refreshed for a duplicate-content fetch).
-        if snapshot.id == candidate_snapshot_id:
+        if snapshot_created:
             advanced = await repository.advance_latest_snapshot_and_metadata(
                 source_item_id=source_item.id,
                 snapshot_id=snapshot.id,
@@ -127,4 +140,10 @@ async def ingest_document(
         await session.rollback()
         raise
 
-    return IngestResult(source_item=source_item, snapshot=snapshot, advanced=advanced)
+    return IngestResult(
+        source_item=source_item,
+        snapshot=snapshot,
+        item_created=item_created,
+        snapshot_created=snapshot_created,
+        advanced=advanced,
+    )
