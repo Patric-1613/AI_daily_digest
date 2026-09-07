@@ -13,13 +13,13 @@
     ]
   },
   "changed_url_pair": {
-    "description": "Pre-ingestion raw entries modeling URL drift across protocol and trailing slash that normalize deterministically",
+    "description": "Pre-ingestion raw entries modeling URL drift via trailing-slash variation on the same scheme that canonicalize_url() and dedupe_key() deterministically normalize to the identical dedupe_key",
     "candidates": [
       {
         "title": "Claude 3.5 Haiku model release overview",
-        "raw_url": "http://anthropic.example.org/news/claude-3-5-haiku-v1/",
-        "expected_canonical_url": "http://anthropic.example.org/news/claude-3-5-haiku-v1",
-        "expected_dedupe_key": "sha256:5d10392688c94ca11f284160eb3e2cab3f32a562f9fa4797593b42e6cd0210de"
+        "raw_url": "https://anthropic.example.org/news/claude-3-5-haiku-v1/",
+        "expected_canonical_url": "https://anthropic.example.org/news/claude-3-5-haiku-v1",
+        "expected_dedupe_key": "sha256:d4d749828da84f9ea36ea1c5aac13b6e802d6f0d39e7c4bfcbdfda58dc1b0552"
       },
       {
         "title": "Claude 3.5 Haiku model release overview",

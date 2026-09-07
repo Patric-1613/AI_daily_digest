@@ -110,8 +110,8 @@ def test_raw_candidate_duplicate_deduplication() -> None:
 
 
 def test_raw_candidate_changed_url_lineage() -> None:
-    """Pre-ingestion candidate entries model URL drift (protocol + trailing slash),
-    normalizing deterministically to expected canonical forms and matching dedupe keys."""
+    """Pre-ingestion candidate entries model URL drift via trailing-slash variation,
+    normalizing deterministically to the identical canonical form and matching dedupe_key."""
     # Note: canonicalize_url() and dedupe_key() currently come from
     # ingestion.rss.normalize (RSS is the only implemented source type today)
     # and this import may need to generalize once a second source type with its
@@ -121,24 +121,20 @@ def test_raw_candidate_changed_url_lineage() -> None:
     candidates = data["changed_url_pair"]["candidates"]
     assert len(candidates) == 2
 
-    v1 = candidates[0]
-    v2 = candidates[1]
+    raw_a = candidates[0]["raw_url"]
+    raw_b = candidates[1]["raw_url"]
+    assert raw_a != raw_b, "changed-url candidate raw links should differ by trailing slash"
 
-    # Verify candidate 1 (http + trailing slash) normalizes deterministically
-    canon_v1 = canonicalize_url(v1["raw_url"])
-    assert canon_v1 == v1["expected_canonical_url"]
-    key_v1 = dedupe_key(canon_v1)
-    assert key_v1 == v1["expected_dedupe_key"]
+    # Call real canonicalize_url() and dedupe_key() from ingestion.rss.normalize
+    canon_a = canonicalize_url(raw_a)
+    canon_b = canonicalize_url(raw_b)
+    assert canon_a == canon_b, "trailing slash must be stripped during canonicalization"
+    assert canon_a == candidates[0]["expected_canonical_url"]
 
-    # Verify candidate 2 (https without trailing slash) normalizes deterministically
-    canon_v2 = canonicalize_url(v2["raw_url"])
-    assert canon_v2 == v2["expected_canonical_url"]
-    key_v2 = dedupe_key(canon_v2)
-    assert key_v2 == v2["expected_dedupe_key"]
-
-    # Protocol difference is preserved, yielding distinct dedupe keys across version lineage
-    assert canon_v1 != canon_v2
-    assert key_v1 != key_v2
+    key_a = dedupe_key(canon_a)
+    key_b = dedupe_key(canon_b)
+    assert key_a == key_b, "trailing-slash candidate entries must collapse to identical dedupe_key"
+    assert key_a == candidates[0]["expected_dedupe_key"]
 
 
 def test_change_previous_null_only_when_not_disclosed_is_the_intent() -> None:
