@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title><![CDATA[OpenAI News]]></title>
+    <description><![CDATA[The OpenAI blog]]></description>
+    <link>https://openai.com/news</link>
+    <lastBuildDate>Sat, 05 Sep 2026 14:07:28 GMT</lastBuildDate>
+    <atom:link href="https://openai.com/news/rss.xml" rel="self" type="application/rss+xml"/>
+  </channel>
+</rss>

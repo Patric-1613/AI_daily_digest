@@ -1,6 +1,24 @@
 # Starter registry for Part A. Secrets belong in environment variables, never here.
-# Global timeout, retry, response-size, rate-limit, and user-agent policy will be added with the
-# first collector schema. Per-source overrides must be explicit; collectors must not invent them.
+# Per-source overrides must be explicit; collectors must not invent them.
+
+# Global collection policy, added with the first collector schema
+# (src/ai_daily_digest/ingestion/sources.py::CollectionPolicy). One bounded set of
+# network defaults every collector shares. Values are deliberately conservative:
+#   - timeout_seconds 15: comfortably covers a large feed (the live OpenAI News
+#     feed is ~0.7 MB) on a slow link, far under any scheduler window.
+#   - max_attempts 3: initial attempt plus two retries -- the usual ceiling for
+#     transient network faults (timeout, connection reset, 5xx, 429).
+#   - backoff_base_seconds 0.5: exponential (0.5s, 1.0s, ...) with jitter; bounded.
+#   - max_response_bytes 5242880 (5 MiB): ~7x the current live feed size; a hard
+#     cap so a runaway or malicious response is aborted mid-read, never buffered.
+#   - user_agent: identifies the crawler with a contact URL (attribution).
+collection_policy:
+  timeout_seconds: 15
+  max_attempts: 3
+  backoff_base_seconds: 0.5
+  max_response_bytes: 5242880
+  user_agent: "ai-daily-digest/0.1 (+https://github.com/Patric-1613/Virtusa_CaPStone)"
+
 sources:
   - id: openai_news
     publisher: OpenAI
@@ -8,6 +26,12 @@ sources:
     url: https://openai.com/news/rss.xml
     priority: 0
     cadence_minutes: 360
+    # Explicit fetch allowlist (feed URL + article links + the www alias).
+    # The collector refuses to fetch, or follow a redirect to, any other
+    # host -- an SSRF and data-exfiltration guard on untrusted feed content.
+    allowed_hosts:
+      - openai.com
+      - www.openai.com
 
   - id: openai_release_notes
     publisher: OpenAI

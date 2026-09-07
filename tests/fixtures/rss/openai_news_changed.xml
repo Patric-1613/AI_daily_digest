@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title><![CDATA[OpenAI News]]></title>
+    <description><![CDATA[The OpenAI blog]]></description>
+    <link>https://openai.com/news</link>
+    <generator>OpenAI</generator>
+    <lastBuildDate>Sat, 12 Sep 2026 08:00:00 GMT</lastBuildDate>
+    <atom:link href="https://openai.com/news/rss.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title><![CDATA[GPT-4o context window increased to 256k tokens]]></title>
+      <description><![CDATA[Correction: GPT-4o now supports a 256,000 token context window for all API customers, up from 128,000. An earlier version of this post misstated the rollout date; the change is effective immediately.]]></description>
+      <link>https://openai.com/index/gpt-4o-256k-context/?utm_source=rss&amp;utm_medium=feed&amp;ref=homepage#summary</link>
+      <guid isPermaLink="true">https://openai.com/index/gpt-4o-256k-context</guid>
+      <category><![CDATA[Product]]></category>
+      <category><![CDATA[API]]></category>
+      <pubDate>Thu, 03 Sep 2026 13:15:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Introducing structured outputs in the API]]></title>
+      <description><![CDATA[Structured Outputs guarantees model responses adhere to a supplied JSON Schema.]]></description>
+      <link>https://openai.com/index/introducing-structured-outputs/</link>
+      <guid isPermaLink="true">https://openai.com/index/introducing-structured-outputs</guid>
+      <category><![CDATA[Product]]></category>
+      <pubDate>Tue, 01 Sep 2026 17:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Research: scaling laws for reasoning]]></title>
+      <description><![CDATA[A new paper studies how reasoning performance scales with inference-time compute.]]></description>
+      <link>https://openai.com/research/scaling-laws-for-reasoning</link>
+      <guid isPermaLink="true">https://openai.com/research/scaling-laws-for-reasoning</guid>
+      <category><![CDATA[Research]]></category>
+      <pubDate>Mon, 25 Aug 2026 09:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Whisper large-v3-turbo released]]></title>
+      <description><![CDATA[A faster speech-to-text model with an 8x speedup and minimal quality regression.]]></description>
+      <link>https://openai.com/index/whisper-large-v3-turbo</link>
+      <guid isPermaLink="true">https://openai.com/index/whisper-large-v3-turbo</guid>
+      <category><![CDATA[Product]]></category>
+      <pubDate>Wed, 20 Aug 2026 14:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

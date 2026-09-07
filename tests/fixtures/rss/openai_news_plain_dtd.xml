@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE rss>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title><![CDATA[OpenAI News]]></title>
+    <link>https://openai.com/news</link>
+    <atom:link href="https://openai.com/news/rss.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title><![CDATA[Otherwise valid entry behind a bare DOCTYPE]]></title>
+      <description><![CDATA[This feed declares a DTD but no entity and references none. The parser must still refuse it.]]></description>
+      <link>https://openai.com/index/plain-dtd-entry</link>
+      <guid isPermaLink="true">https://openai.com/index/plain-dtd-entry</guid>
+      <pubDate>Mon, 25 Aug 2026 09:30:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
