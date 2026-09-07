@@ -12,10 +12,12 @@ describe("AI Daily Digest shell", () => {
     const html = renderToStaticMarkup(<App />);
 
     expect(html).toContain("The signal in AI");
-    expect(html).toContain("Illustrative local fixture");
-    expect(html).toContain("Models in today");
+    expect(html).toContain("Source-backed AI industry monitoring");
+    expect(html).toContain("0 updates loaded");
+    expect(html).toContain("Illustrative model explorer");
     expect(html).toContain("Ask about today");
-    expect(html).toContain("40 claims checked today");
+    expect(html).toContain("Illustrative trust metrics");
+    expect(html).toContain("Loading source updates");
   });
 
   it.each(["Claude", "GPT-4", "Gemini", "DeepSeek", "Llama", "Grok"])(
