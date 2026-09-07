@@ -118,6 +118,16 @@ def test_committed_openai_news_declares_an_explicit_allowlist() -> None:
     assert source.host_allowlist() == frozenset({"openai.com", "www.openai.com"})
 
 
+@pytest.mark.parametrize("source_id", ["langchain_pypi", "langgraph_pypi", "deepagents_pypi"])
+def test_every_pypi_source_declares_exactly_the_pypi_org_allowlist(source_id: str) -> None:
+    """All three PyPI feed definitions state `allowed_hosts: [pypi.org]`
+    explicitly -- no implicit fallback -- so an accidental feed-URL edit
+    cannot silently widen the host guard."""
+    source = load_source_registry().get(source_id)
+    assert source.allowed_hosts == ("pypi.org",)
+    assert source.host_allowlist() == frozenset({"pypi.org"})
+
+
 def test_empty_publisher_is_rejected(tmp_path: Path) -> None:
     path = _write_registry(
         tmp_path,

@@ -1,11 +1,18 @@
-"""Collection orchestration for the OpenAI News RSS source.
+"""Source-neutral collection orchestration for any RSS source.
 
-Ties the transport, parser, and normalizer to the existing ingestion
+`collect_rss_source()` takes a validated `SourceDefinition` of type
+`SourceType.RSS` (openai_news, langchain_pypi, langgraph_pypi, ...) and
+ties the transport, parser, and normalizer to the existing ingestion
 service: fetch the feed once, parse it once, then persist each entry in
 its **own transaction** (`ingest_document` owns that, ADR 0002 section
 13) so one bad entry rolls back only itself and the remaining entries
 still run (`docs/ARCHITECTURE.md`: "One source failure does not abort
 others").
+
+Every per-source value -- feed URL, host allowlist, publisher, source id
+-- comes from the `SourceDefinition`; nothing here is specific to any one
+publisher. `collect_openai_rss` is kept as a thin backwards-compatible
+alias (PR #71 shipped that name).
 
 Returns a small, deterministic, machine-readable `CollectionReport` an
 operator can act on -- counts plus structured, body-free failures.
@@ -39,7 +46,10 @@ from ai_daily_digest.ingestion.sources import CollectionPolicy, SourceDefinition
 
 LOGGER = logging.getLogger(__name__)
 
-COLLECTOR_VERSION = "openai-rss/0.1.0"
+# Identifies the collector *code*, not the source -- every RSS source is
+# collected by this one adapter, so they all record the same
+# `collector_version` on their snapshots (ADR 0002 section 9).
+RSS_COLLECTOR_VERSION = "rss/0.1.0"
 
 _SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 _RepositoryFactory = Callable[[AsyncSession], IngestionWriteRepository]
@@ -116,7 +126,7 @@ class _Tally:
     failures: list[EntryFailure] = field(default_factory=list)
 
 
-async def collect_openai_rss(  # pylint: disable=too-many-arguments,too-many-locals
+async def collect_rss_source(  # pylint: disable=too-many-arguments,too-many-locals
     *,
     source: SourceDefinition,
     policy: CollectionPolicy,
@@ -125,13 +135,18 @@ async def collect_openai_rss(  # pylint: disable=too-many-arguments,too-many-loc
     repository_factory: _RepositoryFactory = PostgresSourceItemRepository,
     clock: Callable[[], datetime] = _utc_now,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    collector_version: str = COLLECTOR_VERSION,
+    collector_version: str = RSS_COLLECTOR_VERSION,
 ) -> CollectionReport:
-    """Run one collection pass over `source` (which must be
-    `SourceType.RSS`). Never raises for an entry-level or feed-level
-    problem -- every failure is captured in the returned report."""
+    """Run one collection pass over `source` -- any registered
+    `SourceType.RSS` source. A non-RSS `source` is a caller bug and
+    raises `ValueError` immediately; every entry-level or feed-level
+    *collection* problem is captured in the returned report, never
+    raised."""
     if source.type is not SourceType.RSS:
-        raise ValueError(f"collect_openai_rss requires an RSS source, got {source.type}")
+        raise ValueError(
+            f"collect_rss_source requires a source of type 'rss', "
+            f"got {source.type.value!r} for source {source.id!r}"
+        )
 
     started_at = clock()
     fetched_at = started_at
@@ -267,4 +282,44 @@ def _failed_report(
         failed_item_count=1,
         fetch_attempts=fetch_attempts,
         failures=(failure,),
+    )
+
+
+async def collect_openai_rss(  # pylint: disable=too-many-arguments
+    *,
+    source: SourceDefinition,
+    policy: CollectionPolicy,
+    fetcher: HttpFetcher,
+    session_factory: _SessionFactory,
+    repository_factory: _RepositoryFactory = PostgresSourceItemRepository,
+    clock: Callable[[], datetime] = _utc_now,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    collector_version: str = RSS_COLLECTOR_VERSION,
+) -> CollectionReport:
+    """Backwards-compatible wrapper for the name PR #71 exported.
+
+    PR #71's `collect_openai_rss` was **already** keyword-only and
+    **already** required `source=` (a `SourceType.RSS` `SourceDefinition`,
+    no default). This wrapper preserves that exact public signature and
+    forwards every argument, unchanged, to `collect_rss_source`. It adds
+    no behaviour of its own -- non-RSS `source` rejection, the report
+    shape, and the pipeline all come from `collect_rss_source` -- and it
+    is **not** a second copy of the collector. New code should call
+    `collect_rss_source` directly with any RSS `SourceDefinition`.
+
+    The one visible change from PR #71 is the default `collector_version`
+    label (`"openai-rss/0.1.0"` -> `"rss/0.1.0"`); that label is snapshot
+    metadata only and is not an input to the canonical URL, `dedupe_key`,
+    normalized content, or `content_hash`, so it never causes a re-snapshot
+    (see `normalize.py` and `test_collector_version_label_does_not_affect_identity`).
+    """
+    return await collect_rss_source(
+        source=source,
+        policy=policy,
+        fetcher=fetcher,
+        session_factory=session_factory,
+        repository_factory=repository_factory,
+        clock=clock,
+        sleep=sleep,
+        collector_version=collector_version,
     )
