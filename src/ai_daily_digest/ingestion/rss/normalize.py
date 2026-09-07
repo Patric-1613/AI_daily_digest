@@ -225,6 +225,13 @@ def normalize_entry(  # pylint: disable=too-many-arguments
     except UnsafeUrlError as exc:
         raise EntryNormalizationError(f"unsafe entry link: {exc}") from exc
 
+    # Identity is derived from the entry alone: `canonicalize_url` reads
+    # `entry.link` only, and `normalized_content` reads `entry.title` +
+    # `entry.description` only. `collector_version` is NOT an input to the
+    # canonical URL, `dedupe_key`, the normalized content, or
+    # `content_hash` -- it is written verbatim as snapshot metadata below.
+    # Relabelling the collector (`openai-rss/0.1.0` -> `rss/0.1.0`) can
+    # therefore never make an unchanged entry look changed.
     canonical = canonicalize_url(entry.link)
     content = normalized_content(entry.title, entry.description)
     published_at = parse_published_at(entry.pub_date_raw)

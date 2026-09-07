@@ -90,7 +90,9 @@ def _bound_session_factory(
     return _open
 
 
-async def _collect(session: AsyncSession, fixture: str) -> CollectionReport:
+async def _collect(
+    session: AsyncSession, fixture: str, *, collector_version: str = "rss/0.1.0"
+) -> CollectionReport:
     return await collect_rss_source(
         source=_SOURCE,
         policy=build_policy(),
@@ -98,6 +100,7 @@ async def _collect(session: AsyncSession, fixture: str) -> CollectionReport:
         session_factory=_bound_session_factory(session),
         clock=stepping_clock(start=datetime(2026, 9, 5, 12, 0, tzinfo=UTC)),
         sleep=RecordingSleep(),
+        collector_version=collector_version,
     )
 
 
@@ -152,6 +155,33 @@ async def test_identical_rerun_is_idempotent(database_session: AsyncSession) -> 
     assert rerun.created_item_count == 0
     assert rerun.created_snapshot_count == 0
     assert rerun.unchanged_count == 4
+    assert await _counts(database_session) == before
+
+
+@pytest.mark.asyncio
+async def test_collector_version_label_does_not_affect_identity(
+    database_session: AsyncSession,
+) -> None:
+    """Person C review point 3: `collector_version` is snapshot metadata,
+    not an input to `dedupe_key` / `content_hash`. Collecting the same
+    OpenAI feed first as `openai-rss/0.1.0` (PR #71's label) then as
+    `rss/0.1.0` (the generalized label) must create **no** new SourceItem
+    and **no** new DocumentSnapshot -- the second run is fully unchanged,
+    so existing OpenAI rows are untouched by the relabel."""
+    first = await _collect(
+        database_session, "openai_news_sample.xml", collector_version="openai-rss/0.1.0"
+    )
+    assert first.created_item_count == first.created_snapshot_count == 4
+    before = await _counts(database_session)
+
+    relabelled = await _collect(
+        database_session, "openai_news_sample.xml", collector_version="rss/0.1.0"
+    )
+
+    assert relabelled.created_item_count == 0
+    assert relabelled.created_snapshot_count == 0
+    assert relabelled.unchanged_count == 4
+    assert relabelled.status is CollectionStatus.OK
     assert await _counts(database_session) == before
 
 

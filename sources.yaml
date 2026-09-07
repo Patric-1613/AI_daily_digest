@@ -120,6 +120,13 @@ sources:
     url: https://pypi.org/rss/project/deepagents/releases.xml
     priority: 1
     cadence_minutes: 360
+    # Same explicit pypi.org restriction as the other two PyPI feeds. This
+    # does NOT mark the source verified or production-supported (it has not
+    # been preflighted or given source-specific tests -- see the ingestion
+    # README); it only makes the host guard explicit so an accidental
+    # feed-URL edit cannot silently change the fallback allowlist.
+    allowed_hosts:
+      - pypi.org
 
   - id: langchain_github_releases
     publisher: LangChain

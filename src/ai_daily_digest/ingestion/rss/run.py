@@ -234,10 +234,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     return exit_code_for(report)
 
 
-def main_openai_news() -> int:
-    """`collect-openai-rss` compatibility entrypoint -- exactly equivalent
-    to `collect-rss --source-id openai_news`. Kept because PR #71 shipped
-    `collect-openai-rss` as the documented command."""
+def main_openai_news(argv: Sequence[str] | None = None) -> int:
+    """`collect-openai-rss` compatibility entrypoint. Kept because PR #71
+    shipped `collect-openai-rss` as the documented command.
+
+    It **always** collects `openai_news` and **never** any other source.
+    It parses its own argument list with a parser that accepts **no**
+    options (bar `-h`): `collect-openai-rss --source-id langchain_pypi`,
+    or any other extra argument, exits with argparse code `2` **before**
+    any registry, database, or network access -- it can never be
+    redirected to a different source. With no extra arguments it invokes
+    the generic path for `openai_news`.
+
+    `argv` defaults to `None` so a console-script call reads the real
+    command line; tests pass an explicit sequence.
+    """
+    argparse.ArgumentParser(
+        prog="collect-openai-rss",
+        description=(
+            "Compatibility command: one collection pass over the openai_news RSS source. "
+            "Equivalent to `collect-rss --source-id openai_news`. Takes no arguments."
+        ),
+    ).parse_args(argv)
     return main(["--source-id", _OPENAI_NEWS_SOURCE_ID])
 
 

@@ -17,8 +17,14 @@ and SHA-256 dedupe/content hashes, ADR 0002 §10 author/tag normalization,
 persistence through the existing `IngestionWriteRepository` protocol, and
 a structured, secret-safe `CollectionReport`.
 
-`collect_openai_rss` is a backwards-compatible alias for
-`collect_rss_source` (the name PR #71 shipped).
+`collect_openai_rss` is a thin backwards-compatible **wrapper** (not a
+second implementation) that keeps the exact keyword-only signature PR #71
+exported — which already required `source=` — and forwards every argument
+to `collect_rss_source`. The one visible change is the default
+`collector_version` label (`openai-rss/0.1.0` → `rss/0.1.0`); that label
+is snapshot metadata only and is not an input to the canonical URL,
+`dedupe_key`, normalized content, or `content_hash`, so relabelling never
+causes a re-snapshot and existing OpenAI rows stay `unchanged`.
 
 ### Verified source IDs
 
@@ -40,9 +46,12 @@ tests:
 
 Every other `type: rss` entry in `sources.yaml` (`google_ai_blog`,
 `google_deepmind`, `deepagents_pypi`, `huggingface_blog`) is **not yet
-verified**. `collect-rss` will still
-attempt it, and if its format is incompatible with the RSS 2.0 parser the
-run fails safely with a structured report — but those sources are **not
+verified**. `deepagents_pypi` carries an explicit
+`allowed_hosts: [pypi.org]` for host-guard consistency with the two
+verified PyPI sources, but that does **not** make it verified or
+production-supported. `collect-rss` will still attempt any of them, and if
+the format is incompatible with the RSS 2.0 parser the run fails safely
+with a structured report — but those sources are **not
 production-supported** by this slice and must be preflighted and given
 their own tests before being relied on.
 

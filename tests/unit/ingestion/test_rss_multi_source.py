@@ -18,7 +18,6 @@ from ai_daily_digest.ingestion.persistence import IngestionWriteRepository
 from ai_daily_digest.ingestion.rss.collector import (
     CollectionReport,
     CollectionStatus,
-    collect_openai_rss,
     collect_rss_source,
 )
 from ai_daily_digest.ingestion.rss.normalize import dedupe_key
@@ -102,10 +101,6 @@ async def test_the_fetch_uses_the_selected_source_url_and_allowlist(source_id: s
 
     assert fetcher.received_urls == [str(source.url)]
     assert fetcher.received_allowed_hosts[0] == source.host_allowlist()
-
-
-def test_collect_openai_rss_is_a_backwards_compatible_alias() -> None:
-    assert collect_openai_rss is collect_rss_source
 
 
 # -- non-RSS input is rejected clearly ---------------------------------

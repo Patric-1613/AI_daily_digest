@@ -241,16 +241,50 @@ def test_main_reports_failed_without_leaking_the_dsn_on_a_database_error(
     assert "pw" not in captured
 
 
-def test_main_openai_news_is_equivalent_to_the_openai_news_source_id(
+def test_main_openai_news_selects_openai_news_with_no_arguments(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The `collect-openai-rss` compatibility command still works and
-    selects `openai_news`."""
+    """`collect-openai-rss` with no extra argv runs the generic path for
+    `openai_news`."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
-    code = main_openai_news()
+    code = main_openai_news([])
 
     assert code == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["source_id"] == "openai_news"
+
+
+def test_main_openai_news_rejects_source_id_before_any_db_or_network(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`collect-openai-rss --source-id langchain_pypi` exits with argparse
+    code 2, before the registry, the database, or the network is touched --
+    the compatibility command can never be redirected to another source."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://u:p@h:5432/d")
+
+    def _no_registry(*_a: object, **_k: object) -> object:
+        raise AssertionError("load_source_registry must not run for a rejected argument")
+
+    def _no_engine(*_a: object, **_k: object) -> object:
+        raise AssertionError("build_engine must not run for a rejected argument")
+
+    monkeypatch.setattr(run_module, "load_source_registry", _no_registry)
+    monkeypatch.setattr(run_module, "build_engine", _no_engine)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main_openai_news(["--source-id", "langchain_pypi"])
+    assert excinfo.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("extra", [["langchain_pypi"], ["--nope"], ["--source-id"], ["-x", "y"]])
+def test_main_openai_news_rejects_any_extra_argument(
+    extra: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main_openai_news(extra)
+    assert excinfo.value.code == 2
+    assert capsys.readouterr().err  # argparse wrote a usage/error message

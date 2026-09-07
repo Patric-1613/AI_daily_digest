@@ -285,9 +285,41 @@ def _failed_report(
     )
 
 
-# Backwards-compatible alias. PR #71 shipped `collect_openai_rss` as the
-# public name; `docs/adr/0009` section 5.1 and the `collect-openai-rss`
-# command reference it. `collect_rss_source` is the real, source-neutral
-# function -- this alias just keeps the older name working. It is not a
-# second copy of the collector.
-collect_openai_rss = collect_rss_source
+async def collect_openai_rss(  # pylint: disable=too-many-arguments
+    *,
+    source: SourceDefinition,
+    policy: CollectionPolicy,
+    fetcher: HttpFetcher,
+    session_factory: _SessionFactory,
+    repository_factory: _RepositoryFactory = PostgresSourceItemRepository,
+    clock: Callable[[], datetime] = _utc_now,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    collector_version: str = RSS_COLLECTOR_VERSION,
+) -> CollectionReport:
+    """Backwards-compatible wrapper for the name PR #71 exported.
+
+    PR #71's `collect_openai_rss` was **already** keyword-only and
+    **already** required `source=` (a `SourceType.RSS` `SourceDefinition`,
+    no default). This wrapper preserves that exact public signature and
+    forwards every argument, unchanged, to `collect_rss_source`. It adds
+    no behaviour of its own -- non-RSS `source` rejection, the report
+    shape, and the pipeline all come from `collect_rss_source` -- and it
+    is **not** a second copy of the collector. New code should call
+    `collect_rss_source` directly with any RSS `SourceDefinition`.
+
+    The one visible change from PR #71 is the default `collector_version`
+    label (`"openai-rss/0.1.0"` -> `"rss/0.1.0"`); that label is snapshot
+    metadata only and is not an input to the canonical URL, `dedupe_key`,
+    normalized content, or `content_hash`, so it never causes a re-snapshot
+    (see `normalize.py` and `test_collector_version_label_does_not_affect_identity`).
+    """
+    return await collect_rss_source(
+        source=source,
+        policy=policy,
+        fetcher=fetcher,
+        session_factory=session_factory,
+        repository_factory=repository_factory,
+        clock=clock,
+        sleep=sleep,
+        collector_version=collector_version,
+    )
