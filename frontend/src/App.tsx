@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { fetchUpdatesPage, mergeUpdates, UpdatesApiError } from "./api/updates";
 import type { UpdateSummary } from "./api/updates";
@@ -20,22 +20,13 @@ export default function App() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [initialRequestVersion, setInitialRequestVersion] = useState(0);
+  const loadMoreController = useRef<AbortController | null>(null);
 
-  const retryInitialUpdates = useCallback(async () => {
+  const retryInitialUpdates = useCallback(() => {
     setInitialLoading(true);
     setError(null);
-    try {
-      const page = await fetchUpdatesPage({ apiBaseUrl: publicConfig.apiBaseUrl });
-      setUpdates(page.items);
-      setNextCursor(page.next_cursor);
-    } catch (loadError) {
-      const message = loadError instanceof UpdatesApiError
-        ? loadError.message
-        : "The updates service could not be reached.";
-      setError(message);
-    } finally {
-      setInitialLoading(false);
-    }
+    setInitialRequestVersion((version) => version + 1);
   }, []);
 
   useEffect(() => {
@@ -44,10 +35,12 @@ export default function App() {
       apiBaseUrl: publicConfig.apiBaseUrl,
       signal: controller.signal,
     }).then((page) => {
+      if (controller.signal.aborted) return;
       setUpdates(page.items);
       setNextCursor(page.next_cursor);
       setError(null);
     }).catch((loadError: unknown) => {
+      if (controller.signal.aborted) return;
       if (loadError instanceof DOMException && loadError.name === "AbortError") return;
       const message = loadError instanceof UpdatesApiError
         ? loadError.message
@@ -56,27 +49,37 @@ export default function App() {
     }).finally(() => {
       if (!controller.signal.aborted) setInitialLoading(false);
     });
-    return () => controller.abort();
-  }, []);
+    return () => {
+      controller.abort();
+      loadMoreController.current?.abort();
+    };
+  }, [initialRequestVersion]);
 
   const loadMoreUpdates = useCallback(async () => {
     if (!nextCursor || loadingMore) return;
+    loadMoreController.current?.abort();
+    const controller = new AbortController();
+    loadMoreController.current = controller;
     setLoadingMore(true);
     setError(null);
     try {
       const page = await fetchUpdatesPage({
         apiBaseUrl: publicConfig.apiBaseUrl,
         cursor: nextCursor,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
       setUpdates((current) => mergeUpdates(current, page.items));
       setNextCursor(page.next_cursor);
     } catch (loadError) {
+      if (controller.signal.aborted) return;
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
       const message = loadError instanceof UpdatesApiError
         ? loadError.message
         : "The updates service could not be reached.";
       setError(message);
     } finally {
-      setLoadingMore(false);
+      if (!controller.signal.aborted) setLoadingMore(false);
     }
   }, [loadingMore, nextCursor]);
 
