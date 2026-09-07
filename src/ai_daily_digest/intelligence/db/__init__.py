@@ -10,7 +10,11 @@ from ai_daily_digest.intelligence.db.models import (
     ExtractedFactModel,
     SubjectModel,
 )
-from ai_daily_digest.intelligence.db.repository import PostgresFactStore
+from ai_daily_digest.intelligence.db.repository import (
+    PostgresChangeFeedRepository,
+    PostgresDigestFeedRepository,
+    PostgresFactStore,
+)
 
 __all__ = [
     "ChangeModel",
@@ -20,6 +24,8 @@ __all__ = [
     "DigestClaimModel",
     "DigestModel",
     "ExtractedFactModel",
+    "PostgresChangeFeedRepository",
+    "PostgresDigestFeedRepository",
     "PostgresFactStore",
     "SubjectModel",
 ]
