@@ -817,7 +817,9 @@ class PostgresFactStore:
                 created_at=created_at,
             )
             self._session.add(c_model)
+        await self._session.flush()
 
+        for claim in digest.claims:
             for cit_pos, snap_id in enumerate(claim.citation_snapshot_ids):
                 cit_model = DigestClaimCitationModel(
                     claim_id=claim.id,
@@ -826,6 +828,7 @@ class PostgresFactStore:
                     created_at=created_at,
                 )
                 self._session.add(cit_model)
+        await self._session.flush()
 
     async def persist_digest(self, digest: Digest) -> Digest:
         """Persist a digest aggregate with its ordered claims and citations.
