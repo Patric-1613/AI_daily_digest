@@ -5,15 +5,18 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Protocol, cast
 
 from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_daily_digest.delivery.api.pagination import CursorCodec
 from ai_daily_digest.shared.repositories import SourceItemFeedRepository
+
+type SourceItemFeedRepositoryFactory = Callable[[AsyncSession], SourceItemFeedRepository]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -121,9 +124,24 @@ def get_cursor_codec(request: Request) -> CursorCodec:
     return cast(CursorCodec, codec)
 
 
-def get_source_item_feed_repository(request: Request) -> SourceItemFeedRepository:
-    """Resolve the application-scoped source item feed repository."""
+async def get_source_item_feed_repository(
+    request: Request,
+) -> AsyncIterator[SourceItemFeedRepository]:
+    """Yield a fixed test repository or one request-scoped database adapter."""
     repo = getattr(request.app.state, "source_item_feed_repository", None)
-    if repo is None:
+    if repo is not None:
+        yield cast(SourceItemFeedRepository, repo)
+        return
+
+    session_factory = cast(
+        async_sessionmaker[AsyncSession] | None,
+        getattr(request.app.state, "database_session_factory", None),
+    )
+    repository_factory = cast(
+        SourceItemFeedRepositoryFactory | None,
+        getattr(request.app.state, "source_item_feed_repository_factory", None),
+    )
+    if session_factory is None or repository_factory is None:
         raise RuntimeError("SourceItemFeedRepository is not configured on the application state")
-    return cast(SourceItemFeedRepository, repo)
+    async with session_factory() as session:
+        yield repository_factory(session)

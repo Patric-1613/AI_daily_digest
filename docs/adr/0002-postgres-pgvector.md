@@ -728,10 +728,12 @@ server-side transaction, cursor, or scroll. There is no `as_of` snapshot in Phas
 ### 14. Configuration and readiness
 
 - **`DATABASE_URL` stays an environment setting with no committed secret.** Already present
-  as an empty placeholder in `.env.example`. Format:
-  `postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME`. Alembic reads the same variable.
-  The configuration layer parses it, confirms it is set when a database-backed feature is
-  configured, and never logs it or any component of it.
+  as an empty placeholder in `.env.example`. The canonical application form is
+  `postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME`. Managed-provider connection strings
+  using the driver-neutral `postgres://` or `postgresql://` scheme are normalized to that
+  psycopg-explicit form at the typed configuration boundary; all other schemes fail closed.
+  Alembic reads the same normalized value. The configuration layer confirms the value is set
+  when a database-backed feature is configured and never logs it or any component of it.
 - **A configured database-backed API must install a real readiness probe.** A
   `DatabaseReadinessProbe` implementing the existing `ReadinessProbe` Protocol
   (`dependencies.py:20-24`) whose `is_ready()` runs a **bounded `SELECT 1`** on a pooled
