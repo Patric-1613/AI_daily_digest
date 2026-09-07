@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>PyPI recent updates for langchain</title>
+    <link>https://pypi.org/project/langchain/</link>
+    <description>Synthetic fixture channel for the LangChain PyPI release feed shape.</description>
+    <item>
+      <title>9.9.0</title>
+      <link>https://pypi.org/project/langchain/9.9.0/</link>
+      <description>Synthetic release note for LangChain 9.9.0 -- revised fixture text to force a new content hash.</description>
+      <pubDate>Thu, 03 Sep 2026 16:59:31 GMT</pubDate>
+    </item>
+    <item>
+      <title>9.9.0rc1</title>
+      <link>https://pypi.org/project/langchain/9.9.0rc1/</link>
+      <description>Synthetic release note for LangChain 9.9.0rc1 (fixture data, not real).</description>
+      <pubDate>Wed, 02 Sep 2026 05:34:55 GMT</pubDate>
+    </item>
+    <item>
+      <title>9.8.4</title>
+      <link>https://pypi.org/project/langchain/9.8.4/</link>
+      <description>Synthetic release note for LangChain 9.8.4 (fixture data, not real).</description>
+      <pubDate>Tue, 01 Sep 2026 17:19:12 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

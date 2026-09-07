@@ -59,6 +59,11 @@ class FakeFetcher:
     def call_count(self) -> int:
         return len(self._calls)
 
+    @property
+    def received_urls(self) -> list[str]:
+        """Every URL `fetch` was called with, in order."""
+        return list(self._calls)
+
     async def fetch(
         self,
         url: str,

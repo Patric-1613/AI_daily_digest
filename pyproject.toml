@@ -115,12 +115,16 @@ dependencies = [
 ]
 
 [project.scripts]
-# Minimal production command for one OpenAI News RSS collection run
-# (src/ai_daily_digest/ingestion/rss/run.py). Loads sources.yaml, reads
+# Minimal production command for one RSS-source collection run
+# (src/ai_daily_digest/ingestion/rss/run.py). `collect-rss --source-id <id>`
+# loads sources.yaml, requires the source to have type: rss, reads
 # DATABASE_URL through shared.config, uses the shared engine/session
 # factory, and prints a machine-readable JSON report. Exit 0 = ok,
-# 1 = partial, 2 = failed.
-collect-openai-rss = "ai_daily_digest.ingestion.rss.run:main"
+# 1 = partial, 2 = failed / could not start. Not a scheduler.
+collect-rss = "ai_daily_digest.ingestion.rss.run:main"
+# Compatibility alias for the command PR #71 shipped -- equivalent to
+# `collect-rss --source-id openai_news`.
+collect-openai-rss = "ai_daily_digest.ingestion.rss.run:main_openai_news"
 
 [dependency-groups]
 dev = [
