@@ -2,6 +2,11 @@
 
 Status: Accepted by Persons A, B, and C
 Date: 2026-09-02
+Amended: 2026-09-06 — the first ingestion vertical slice (OpenAI RSS collector,
+PR #71) activates the deferred source-adapter-type enum. Section 5's
+"source adapter types" deferral is superseded by the new section 5.1
+(`SourceType`, ingestion-local); no other decision in this ADR changes and its
+accepted status stands.
 
 ## Context
 
@@ -105,8 +110,41 @@ The following fields remain `str` and are NOT converted to Enums in Phase 1:
   - *Critical Distinction*: Persisted `DisclosureStatus` only contains `disclosed` and
     `not_disclosed`. `"unknown"` represents the absence of an `ExtractedFact` row and MUST NEVER
     become a member of the persisted `DisclosureStatus` Enum.
-- **Resolution methods, comparison relations, source adapter types, email delivery statuses**:
-  Deferred until their respective vertical slices are implemented.
+- **Resolution methods, comparison relations, email delivery statuses**: Deferred until their
+  respective vertical slices are implemented.
+- **Source adapter types (`SourceType`)**: **Activated 2026-09-06** by the first ingestion
+  vertical slice — see section 5.1. (Previously listed here as deferred.)
+
+---
+
+### 5.1 Source adapter types — `SourceType` (ingestion-local, activated 2026-09-06)
+
+The OpenAI RSS collector (PR #71) is the first ingestion vertical slice, so the source-adapter-type
+enum this ADR deferred in section 5 is now defined. It follows the same rules as every other
+module-local enum:
+
+- **Placement — ingestion module, not `shared/`.** `SourceType(StrEnum)` lives in
+  `src/ai_daily_digest/ingestion/sources.py`, the module that owns the `sources.yaml` registry
+  (section 7: "Module-local Enums live in their respective owning domain module"). No other module
+  needs it, so it does not go in `shared/schemas.py`.
+- **Meaning — the closed set of adapter *categories* the source registry accepts.** Members:
+  `rss`, `html`, `changelog`, `github_releases_api`. Application behaviour depends directly on the
+  value (which collector runs, if any), and the set is deliberately closed, so the section 1
+  governing rule applies.
+- **Enum membership is not collector implementation.** Only `rss` has an implemented collector in
+  PR #71. The `html`, `changelog`, and `github_releases_api` members correspond to categories
+  **already present in `sources.yaml`** (for example `openai_release_notes` is `changelog`,
+  `anthropic_news` is `html`, `langchain_github_releases` is `github_releases_api`); their
+  collectors remain **deferred** to their own vertical slices. A member records that the registry
+  may legally declare that category — it does **not** assert that a working adapter exists. These
+  unimplemented collectors are not marked complete anywhere.
+- **Runtime dispatch must fail clearly for a category with no adapter.** A collection run that
+  reaches a registered source whose `SourceType` has no implemented collector must raise an
+  explicit error, never silently skip or mishandle it. `collect_openai_rss` already guards this
+  (`if source.type is not SourceType.RSS: raise ValueError(...)`); the future multi-source
+  dispatch layer carries the same obligation.
+- **Adding a new adapter category is a reviewed change** to both the `SourceType` enum and
+  `sources.yaml`, exactly as sections 1 and 7 require for any closed application-owned set.
 
 ---
 

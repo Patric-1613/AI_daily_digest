@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title><![CDATA[OpenAI News]]></title>
+    <link>https://openai.com/news</link>
+    <atom:link href="https://openai.com/news/rss.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title><![CDATA[Valid entry one]]></title>
+      <description><![CDATA[This entry is well formed and should be ingested.]]></description>
+      <link>https://openai.com/index/valid-entry-one</link>
+      <guid isPermaLink="true">https://openai.com/index/valid-entry-one</guid>
+      <pubDate>Mon, 25 Aug 2026 09:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Entry with no link]]></title>
+      <description><![CDATA[This entry has an empty link element and cannot be persisted.]]></description>
+      <link></link>
+      <guid isPermaLink="false">urn:openai:no-link-entry</guid>
+      <pubDate>Sun, 24 Aug 2026 10:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Entry with an unparseable date]]></title>
+      <description><![CDATA[The pubDate here is not RFC 822 and normalization must reject this entry.]]></description>
+      <link>https://openai.com/index/bad-date-entry</link>
+      <guid isPermaLink="true">https://openai.com/index/bad-date-entry</guid>
+      <pubDate>not a real date</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Valid entry two]]></title>
+      <description><![CDATA[This sibling entry must still be ingested despite the failures above it.]]></description>
+      <link>https://openai.com/index/valid-entry-two</link>
+      <guid isPermaLink="true">https://openai.com/index/valid-entry-two</guid>
+      <pubDate>Wed, 20 Aug 2026 14:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

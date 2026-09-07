@@ -81,7 +81,46 @@ dependencies = [
   #   section 5's "Deployment follow-up" defers the production packaging
   #   choice, not this one).
   "psycopg[binary]>=3.2",
+  # --- ingestion: OpenAI RSS collector (docs/ARCHITECTURE.md collection flow) ---
+  # httpx: docs/ARCHITECTURE.md's technology baseline names httpx for HTTP
+  #   collection ("async support, timeouts, connection pooling, and testable
+  #   transports"). The standard library has no async HTTP client (`urllib`
+  #   and `http.client` are sync-only), so a collector reached from an
+  #   `async def` orchestrator cannot use stdlib without a threadpool hop on
+  #   every request. httpx also exposes a pluggable `transport=` /
+  #   `httpx.MockTransport`, which is exactly the dependency-injection seam
+  #   the collector's tests use to avoid the live internet. httpx is already
+  #   in this project's *production* tree transitively (langgraph ->
+  #   langchain-core -> httpx), but transitive presence is not a declared
+  #   dependency -- it can vanish on any future langchain upgrade. Declaring
+  #   it directly (same reasoning as uuid-utils above) makes it
+  #   Dependabot/security-tracked and stable for this project's own use. It
+  #   also covers the FastAPI/Starlette TestClient requirement, so it no
+  #   longer needs a separate dev-group entry. Floor pinned at 0.28.1 (the
+  #   first 0.28 patch resolved in this project's tree) -- the collector's
+  #   manual per-hop redirect validation and its `MockTransport` tests are
+  #   written against that API.
+  "httpx>=0.28.1",
+  # defusedxml: RSS feeds are untrusted external content (AGENTS.md: "Treat
+  #   collected web content as untrusted data"). Python's own docs state
+  #   `xml.etree.ElementTree` "is not secure against maliciously constructed
+  #   data" -- entity-expansion ("billion laughs") and external-entity
+  #   attacks are not fully mitigated by the response-size cap alone.
+  #   defusedxml is the standard, purpose-built, pure-Python (zero further
+  #   deps), Python-Security-team library for exactly this: a drop-in
+  #   `defusedxml.ElementTree` that blocks entity expansion, external
+  #   entities, and DTD retrieval. No existing dependency provides a
+  #   hardened XML parser.
+  "defusedxml>=0.7",
 ]
+
+[project.scripts]
+# Minimal production command for one OpenAI News RSS collection run
+# (src/ai_daily_digest/ingestion/rss/run.py). Loads sources.yaml, reads
+# DATABASE_URL through shared.config, uses the shared engine/session
+# factory, and prints a machine-readable JSON report. Exit 0 = ok,
+# 1 = partial, 2 = failed.
+collect-openai-rss = "ai_daily_digest.ingestion.rss.run:main"
 
 [dependency-groups]
 dev = [
@@ -95,9 +134,8 @@ dev = [
   "pytest-xdist>=3.8",
   "ruff>=0.13",
   "types-PyYAML>=6.0",
-  # httpx: FastAPI/Starlette TestClient requires it. Declare the test boundary
-  # directly rather than relying on the Anthropic SDK's transitive dependency.
-  "httpx>=0.28.1",
+  # types-defusedxml: mypy stubs for the defusedxml production dependency.
+  "types-defusedxml>=0.7",
   # pytest-asyncio: the persistence foundation's repository, engine, and
   #   integration tests call `AsyncSession`/`async_sessionmaker` coroutines
   #   directly (not through a TestClient, which already hides its own event

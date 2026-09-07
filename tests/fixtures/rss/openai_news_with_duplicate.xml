@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+  <channel>
+    <title><![CDATA[OpenAI News]]></title>
+    <link>https://openai.com/news</link>
+    <atom:link href="https://openai.com/news/rss.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title><![CDATA[GPT-4o context window increased to 256k tokens]]></title>
+      <description><![CDATA[GPT-4o now supports a 256,000 token context window for all API customers, up from 128,000. Pricing is unchanged.]]></description>
+      <link>https://openai.com/index/gpt-4o-256k-context</link>
+      <guid isPermaLink="true">https://openai.com/index/gpt-4o-256k-context</guid>
+      <pubDate>Thu, 03 Sep 2026 13:15:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[Introducing structured outputs in the API]]></title>
+      <description><![CDATA[Structured Outputs guarantees model responses adhere to a supplied JSON Schema.]]></description>
+      <link>https://openai.com/index/introducing-structured-outputs</link>
+      <guid isPermaLink="true">https://openai.com/index/introducing-structured-outputs</guid>
+      <pubDate>Tue, 01 Sep 2026 17:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title><![CDATA[GPT-4o context window increased to 256k tokens]]></title>
+      <description><![CDATA[GPT-4o now supports a 256,000 token context window for all API customers, up from 128,000. Pricing is unchanged.]]></description>
+      <link>https://openai.com/index/gpt-4o-256k-context/?ref=digest#top</link>
+      <guid isPermaLink="true">https://openai.com/index/gpt-4o-256k-context</guid>
+      <pubDate>Thu, 03 Sep 2026 13:15:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

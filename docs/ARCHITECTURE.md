@@ -36,7 +36,7 @@ flowchart LR
 | Vector search | pgvector in the same PostgreSQL instance | Avoids a second database during the MVP while supporting semantic retrieval. |
 | Database access | SQLAlchemy 2 + Alembic | Explicit persistence layer and reviewable migrations. |
 | HTTP collection | httpx | Async support, timeouts, connection pooling, and testable transports. |
-| Feed parsing | feedparser | Established RSS/Atom normalization. |
+| Feed parsing | Phase 1: `defusedxml` + deterministic RSS 2.0 mapping | Defensive parsing of untrusted feed XML — `defusedxml` blocks entity expansion, external entities, and DTD retrieval, which the plain stdlib parser does not. `defusedxml` does **not** normalize feeds; the mapping from `<item>` elements to `SourceItem`/`DocumentSnapshot` is deterministic project code. `feedparser` may be introduced later for Atom or broader feed-format support when an actual source requires it; the Phase-1 OpenAI RSS slice targets RSS 2.0 only and does not claim general Atom support. |
 | Agent workflow | LangGraph | Explicit state and resumable, testable workflow steps. |
 | Model adapters | LangChain interfaces where useful | Provider abstraction and structured-output integration. |
 | Deep Agents | Only for a demonstrated long-horizon research task | Avoid adding an agent framework merely to satisfy a technology list. |
