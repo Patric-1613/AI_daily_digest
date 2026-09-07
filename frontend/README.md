@@ -1,6 +1,6 @@
 # AI Daily Digest frontend
 
-React, TypeScript and Vite frontend foundation for AI Daily Digest. It currently renders an illustrative, data-free single-page shell and does not call the backend yet.
+React, TypeScript and Vite frontend for AI Daily Digest. The latest-updates feed calls the backend's cursor-paginated `GET /v1/updates` endpoint. Model exploration, chat and trust metrics remain visibly labelled illustrative previews until their API contracts are implemented.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ Open <http://localhost:3000>. The committed `package-lock.json` provides reprodu
 
 ## Public configuration
 
-`VITE_API_BASE_URL` is the public base URL reserved for the FastAPI service. Local development defaults to `http://localhost:8000`; a deployed frontend should receive the deployed API origin instead. The current shell deliberately does not make network requests.
+`VITE_API_BASE_URL` is the public base URL for the FastAPI service. Local development defaults to `http://localhost:8000`; a deployed frontend should receive the deployed API origin instead. The updates feed requests `/v1/updates` from this base URL.
 
 Only variables prefixed with `VITE_` may be exposed to frontend code. Do not place API keys, Render credentials, Resend keys or any other secrets in a `VITE_` variable or commit them to the repository.
 
