@@ -387,3 +387,33 @@ async def test_get_latest_published_digest(
     assert latest is not None
     assert latest.id == d2_id
     assert latest.digest_date == date(2026, 9, 3)
+
+
+@pytest.mark.asyncio
+async def test_persist_digest_rejects_publishing_existing_draft_directly(
+    database_session: AsyncSession,
+) -> None:
+    """persist_digest() raises ValueError when called with status=PUBLISHED on an existing draft."""
+    _, snap_id = await _create_snapshot(database_session)
+    repo = PostgresDigestRepository(database_session)
+
+    digest_id = new_id()
+    draft_digest = Digest(
+        id=digest_id,
+        digest_date=date(2026, 9, 4),
+        status=DigestStatus.DRAFT,
+        title="Draft Digest",
+        claims=[
+            DigestClaim(
+                id=new_id(),
+                text="Pending claim",
+                citation_snapshot_ids=[snap_id],
+                validation_status=ClaimValidationStatus.PENDING,
+            )
+        ],
+    )
+    await repo.persist_digest(draft_digest)
+
+    attempted_published = draft_digest.model_copy(update={"status": DigestStatus.PUBLISHED})
+    with pytest.raises(ValueError, match=r"Cannot publish existing digest .* via persist_digest"):
+        await repo.persist_digest(attempted_published)

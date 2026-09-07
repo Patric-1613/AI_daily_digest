@@ -845,6 +845,11 @@ class PostgresFactStore:
                 raise ValueError(
                     f"Cannot modify already-published digest {digest.id}: attributes differ"
                 )
+            if digest.status == DigestStatus.PUBLISHED:
+                raise ValueError(
+                    f"Cannot publish existing digest {digest.id} via persist_digest(); "
+                    "use publish_digest() to validate and transition to published"
+                )
             if existing == digest:
                 return existing
 

@@ -232,3 +232,24 @@ async def test_persist_digest_idempotent_on_published_digest() -> None:
     modified_digest = published_digest.model_copy(update={"title": "Changed Title"})
     with pytest.raises(ValueError, match="Cannot modify already-published digest"):
         await repo.persist_digest(modified_digest)
+
+
+@pytest.mark.asyncio
+async def test_persist_digest_rejects_publishing_existing_draft_directly() -> None:
+    """persist_digest() raises ValueError when called with status=PUBLISHED on an existing draft."""
+    mock_session = AsyncMock()
+    repo = PostgresFactStore(mock_session)
+
+    digest_id = new_id()
+    existing_draft = Digest(
+        id=digest_id,
+        digest_date=date(2026, 9, 4),
+        status=DigestStatus.DRAFT,
+        title="Draft Digest",
+        claims=[],
+    )
+    repo.get_digest_by_id = AsyncMock(return_value=existing_draft)  # type: ignore[method-assign]
+
+    attempted_published = existing_draft.model_copy(update={"status": DigestStatus.PUBLISHED})
+    with pytest.raises(ValueError, match=r"Cannot publish existing digest .* via persist_digest"):
+        await repo.persist_digest(attempted_published)
