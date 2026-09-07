@@ -9,12 +9,14 @@ from datetime import date, datetime
 from typing import Protocol, runtime_checkable
 
 from ai_daily_digest.shared.schemas import Change, Digest, SourceItem
+from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
 __all__ = [
     "ChangeFeedFilter",
     "ChangeFeedRepository",
     "DigestFeedFilter",
     "DigestFeedRepository",
+    "DigestRepository",
     "FeedFilter",
     "SourceItemFeedRepository",
 ]
@@ -136,3 +138,38 @@ class DigestFeedRepository(Protocol):
             A sequence of up to limit + 1 published Digest instances matching the
             filters and keyset predicate.
         """
+
+
+@runtime_checkable
+class DigestRepository(Protocol):
+    """Asynchronous repository protocol for intelligence digest persistence and publication
+    — ADR 0011."""
+
+    async def persist_digest(self, digest: Digest) -> Digest:
+        """Persist a digest aggregate with its ordered claims and citations.
+
+        Idempotent on repeat calls with identical attributes.
+        """
+
+    async def publish_digest(
+        self,
+        digest_id: uuid.UUID,
+        *,
+        known_snapshot_ids: set[uuid.UUID],
+        snapshot_resolver: SnapshotResolver,
+    ) -> Digest:
+        """Publish an existing digest via the intelligence validation gate.
+
+        Delegates to validate.py::publish_digest() and updates database state.
+        If validation succeeds, claims are updated to 'supported' before the digest
+        is marked 'published'. If validation fails, the digest is routed to 'review'.
+
+        Raises:
+            ValueError: If digest_id is not found.
+        """
+
+    async def get_digest_by_id(self, digest_id: uuid.UUID) -> Digest | None:
+        """Retrieve a digest aggregate by its unique ID, preserving claim and citation order."""
+
+    async def get_latest_published_digest(self) -> Digest | None:
+        """Retrieve the most recently published digest by (digest_date DESC, id DESC)."""
