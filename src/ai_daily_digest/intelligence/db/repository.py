@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.intelligence.db.models import (
@@ -22,8 +22,12 @@ from ai_daily_digest.intelligence.db.models import (
     SubjectModel,
 )
 from ai_daily_digest.intelligence.facts import _infer_change_type, normalise_name
+from ai_daily_digest.intelligence.validate import publish_digest as _validate_publish_digest
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.repositories import ChangeFeedFilter, DigestFeedFilter
+from ai_daily_digest.shared.repositories import (
+    ChangeFeedFilter,
+    DigestFeedFilter,
+)
 from ai_daily_digest.shared.schemas import (
     Change,
     ClaimValidationStatus,
@@ -37,10 +41,12 @@ from ai_daily_digest.shared.schemas import (
     normalize_ordering_timestamp,
     validate_change_shape,
 )
+from ai_daily_digest.shared.snapshot_resolver import SnapshotResolver
 
 __all__ = [
     "PostgresChangeFeedRepository",
     "PostgresDigestFeedRepository",
+    "PostgresDigestRepository",
     "PostgresFactStore",
 ]
 
@@ -670,7 +676,7 @@ class PostgresFactStore:
             )
         return results
 
-    async def list_digests(  # pylint: disable=too-many-locals
+    async def list_digests(
         self,
         *,
         feed_filter: DigestFeedFilter | None = None,
@@ -710,6 +716,12 @@ class PostgresFactStore:
         stmt = stmt.order_by(DigestModel.digest_date.desc(), DigestModel.id.desc()).limit(limit + 1)
         res = await self._session.execute(stmt)
         digest_rows = list(res.scalars().all())
+        return await self._hydrate_digests(digest_rows)
+
+    # pylint: disable=too-many-locals
+    async def _hydrate_digests(self, digest_rows: list[DigestModel]) -> list[Digest]:
+        """Hydrate DigestModel instances into domain Digest objects with claims and citations in
+        exact positional order."""
         if not digest_rows:
             return []
 
@@ -763,6 +775,181 @@ class PostgresFactStore:
             )
         return digests
 
+    async def get_digest_by_id(self, digest_id: uuid.UUID) -> Digest | None:
+        """Retrieve a digest aggregate by its unique ID, preserving claim and citation order."""
+        stmt = select(DigestModel).where(DigestModel.id == digest_id)
+        res = await self._session.execute(stmt)
+        row = res.scalar_one_or_none()
+        if row is None:
+            return None
+        hydrated = await self._hydrate_digests([row])
+        return hydrated[0] if hydrated else None
+
+    async def get_latest_published_digest(self) -> Digest | None:
+        """Retrieve the most recently published digest by (digest_date DESC, id DESC)."""
+        stmt = (
+            select(DigestModel)
+            .where(DigestModel.status == DigestStatus.PUBLISHED.value)
+            .order_by(DigestModel.digest_date.desc(), DigestModel.id.desc())
+            .limit(1)
+        )
+        res = await self._session.execute(stmt)
+        row = res.scalar_one_or_none()
+        if row is None:
+            return None
+        hydrated = await self._hydrate_digests([row])
+        return hydrated[0] if hydrated else None
+
+    async def _insert_claims_and_citations(self, digest: Digest) -> None:
+        """Insert ordered claims and citations for a digest."""
+        now = datetime.now(UTC)
+        bind = self._session.get_bind()
+        is_sqlite = bind is not None and bind.dialect.name == "sqlite"
+        created_at = now.isoformat() if is_sqlite else now
+
+        for claim_pos, claim in enumerate(digest.claims):
+            c_model = DigestClaimModel(
+                id=claim.id,
+                digest_id=digest.id,
+                position=claim_pos,
+                text=claim.text,
+                validation_status=claim.validation_status.value,
+                created_at=created_at,
+            )
+            self._session.add(c_model)
+
+            for cit_pos, snap_id in enumerate(claim.citation_snapshot_ids):
+                cit_model = DigestClaimCitationModel(
+                    claim_id=claim.id,
+                    snapshot_id=snap_id,
+                    position=cit_pos,
+                    created_at=created_at,
+                )
+                self._session.add(cit_model)
+
+    async def persist_digest(self, digest: Digest) -> Digest:
+        """Persist a digest aggregate with its ordered claims and citations.
+
+        Idempotent on repeat calls with identical attributes.
+        Raises ValueError if an already-published digest is modified.
+        """
+        existing = await self.get_digest_by_id(digest.id)
+        if existing is not None:
+            if existing.status == DigestStatus.PUBLISHED:
+                if (
+                    existing.digest_date == digest.digest_date
+                    and existing.title == digest.title
+                    and existing.claims == digest.claims
+                ):
+                    return existing
+                raise ValueError(
+                    f"Cannot modify already-published digest {digest.id}: attributes differ"
+                )
+            if existing == digest:
+                return existing
+
+            d_model = await self._session.get(DigestModel, digest.id)
+            if d_model is not None:
+                d_model.digest_date = digest.digest_date
+                d_model.title = digest.title
+                d_model.status = digest.status.value
+
+            old_claims_res = await self._session.execute(
+                select(DigestClaimModel.id).where(DigestClaimModel.digest_id == digest.id)
+            )
+            old_claim_ids = list(old_claims_res.scalars().all())
+            if old_claim_ids:
+                await self._session.execute(
+                    delete(DigestClaimCitationModel).where(
+                        DigestClaimCitationModel.claim_id.in_(old_claim_ids)
+                    )
+                )
+                await self._session.execute(
+                    delete(DigestClaimModel).where(DigestClaimModel.digest_id == digest.id)
+                )
+                await self._session.flush()
+
+            await self._insert_claims_and_citations(digest)
+            await self._session.flush()
+            return await self.get_digest_by_id(digest.id) or digest
+
+        now = datetime.now(UTC)
+        bind = self._session.get_bind()
+        is_sqlite = bind is not None and bind.dialect.name == "sqlite"
+        created_at = now.isoformat() if is_sqlite else now
+
+        initial_status = (
+            DigestStatus.DRAFT.value
+            if digest.status == DigestStatus.PUBLISHED
+            else digest.status.value
+        )
+
+        d_model = DigestModel(
+            id=digest.id,
+            digest_date=digest.digest_date,
+            status=initial_status,
+            title=digest.title,
+            created_at=created_at,
+        )
+        self._session.add(d_model)
+        await self._session.flush()
+
+        await self._insert_claims_and_citations(digest)
+        await self._session.flush()
+
+        if digest.status == DigestStatus.PUBLISHED:
+            d_model.status = DigestStatus.PUBLISHED.value
+            await self._session.flush()
+
+        return await self.get_digest_by_id(digest.id) or digest
+
+    async def publish_digest(
+        self,
+        digest_id: uuid.UUID,
+        *,
+        known_snapshot_ids: set[uuid.UUID],
+        snapshot_resolver: SnapshotResolver,
+    ) -> Digest:
+        """Publish an existing digest via the intelligence validation gate.
+
+        Delegates to validate.py::publish_digest() and updates database state.
+        Sequencing guarantee: digest_claims.validation_status rows are updated
+        and flushed before DigestModel.status = 'published' is flushed, ensuring
+        trg_enforce_digest_publication observes supported claims.
+
+        Raises:
+            ValueError: If digest_id is not found.
+        """
+        stored_digest = await self.get_digest_by_id(digest_id)
+        if stored_digest is None:
+            raise ValueError(f"Digest with id {digest_id} not found")
+
+        validated = _validate_publish_digest(
+            stored_digest,
+            known_snapshot_ids,
+            snapshot_resolver=snapshot_resolver,
+        )
+
+        claims_stmt = select(DigestClaimModel).where(DigestClaimModel.digest_id == digest_id)
+        res = await self._session.execute(claims_stmt)
+        claim_models = {c.id: c for c in res.scalars().all()}
+
+        for claim in validated.claims:
+            c_model = claim_models.get(claim.id)
+            if c_model is not None:
+                c_model.validation_status = claim.validation_status.value
+
+        await self._session.flush()
+
+        digest_model = await self._session.get(DigestModel, digest_id)
+        if digest_model is None:
+            raise ValueError(f"Digest with id {digest_id} not found")
+        digest_model.status = validated.status.value
+
+        await self._session.flush()
+        return validated
+
 
 PostgresChangeFeedRepository = PostgresFactStore
 PostgresDigestFeedRepository = PostgresFactStore
+PostgresDigestRepository = PostgresFactStore
