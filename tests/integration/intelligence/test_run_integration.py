@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
-from ai_daily_digest.intelligence.db.models import ChangeModel, DigestModel, ExtractedFactModel
+from ai_daily_digest.intelligence.db.models import DigestModel, ExtractedFactModel
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.run import (
     main,
@@ -288,3 +288,65 @@ async def test_cli_main_e2e_smoke(
         res = await session.execute(select(DigestModel).where(DigestModel.digest_date == today))
         digests = list(res.scalars().all())
         assert len(digests) >= 1
+
+
+@pytest.mark.asyncio
+async def test_published_outcome_persists_as_draft_then_publishes(
+    open_database_session: _OpenSession,
+) -> None:
+    """A run resulting in all claims supported persists as draft first, then publishes cleanly.
+
+    Ensures compatibility with PR #84 publication gate: brand-new digests cannot
+    be directly persisted with status='published' via persist_digest(); the runner
+    persists as draft first and transitions via publish_digest().
+    """
+    window_start = datetime(2026, 9, 7, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 8, 0, 0, 0, tzinfo=UTC)
+    digest_date = date(2026, 9, 7)
+
+    async with open_database_session() as session:
+        _, _snap_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Launch",
+            content_text="OpenAI introduces GPT-4o with 128000 context window.",
+            fetched_at=window_start + timedelta(hours=2),
+        )
+        await session.commit()
+
+    def mock_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system, prompt
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="128000",
+                    quoted_span="128000 context window",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    report = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=digest_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=mock_extract,
+    )
+
+    assert report.selected_snapshot_count == 1
+    assert report.processed_snapshot_count == 1
+    assert report.failed_snapshot_count == 0
+    assert report.extracted_change_count == 1
+    assert report.claim_count == 1
+    assert report.published is True
+    assert report.status == "published"
+    assert report.digest_status == "published"
+    assert report.digest_id is not None
+
+    async with open_database_session() as session:
+        res = await session.execute(select(DigestModel).where(DigestModel.id == report.digest_id))
+        persisted_digest = res.scalar_one_or_none()
+        assert persisted_digest is not None
+        assert persisted_digest.status == "published"
+        assert persisted_digest.digest_date == digest_date

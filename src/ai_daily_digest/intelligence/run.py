@@ -36,7 +36,6 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from pydantic import HttpUrl
-
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -480,7 +479,12 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
     # Digest persistence and publication transaction
     async with session_factory() as session:
         store = PostgresFactStore(session)
-        persisted = await store.persist_digest(digest)
+        digest_to_persist = (
+            digest.model_copy(update={"status": DigestStatus.DRAFT})
+            if digest.status == DigestStatus.PUBLISHED
+            else digest
+        )
+        persisted = await store.persist_digest(digest_to_persist)
         if digest.status == DigestStatus.PUBLISHED:
             final_digest = await store.publish_digest(
                 persisted.id,
