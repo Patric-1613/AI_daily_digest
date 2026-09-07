@@ -47,10 +47,10 @@ def test_postgres_fact_store_satisfies_digest_repository_protocol() -> None:
 async def test_publish_digest_raises_value_error_when_digest_not_found() -> None:
     """publish_digest() raises ValueError when digest_id does not exist in the database."""
     mock_session = AsyncMock()
+    lock_res = MagicMock()
+    lock_res.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = lock_res
     repo = PostgresFactStore(mock_session)
-
-    # Mock get_digest_by_id to return None
-    repo.get_digest_by_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     missing_id = new_id()
     resolver = InMemorySnapshotResolver()
@@ -88,8 +88,18 @@ async def test_publish_digest_supported_claims_routes_to_published() -> None:
         title="Valid Daily Digest",
         claims=[claim],
     )
+    published_digest = draft_digest.model_copy(
+        update={
+            "status": DigestStatus.PUBLISHED,
+            "claims": [
+                claim.model_copy(update={"validation_status": ClaimValidationStatus.SUPPORTED})
+            ],
+        }
+    )
 
-    repo.get_digest_by_id = AsyncMock(return_value=draft_digest)  # type: ignore[method-assign]
+    repo.get_digest_by_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[draft_digest, published_digest]
+    )
 
     # Mock DB claim and digest models
     c_model = DigestClaimModel(
@@ -108,9 +118,11 @@ async def test_publish_digest_supported_claims_routes_to_published() -> None:
         created_at=datetime.now(UTC),
     )
 
+    lock_res = MagicMock()
+    lock_res.scalar_one_or_none.return_value = digest_id
     claims_res = MagicMock()
     claims_res.scalars.return_value.all.return_value = [c_model]
-    mock_session.execute.return_value = claims_res
+    mock_session.execute.side_effect = [lock_res, claims_res]
     mock_session.get.return_value = d_model
 
     resolver = InMemorySnapshotResolver(
@@ -157,8 +169,18 @@ async def test_publish_digest_unsupported_claims_routes_to_review() -> None:
         title="Unverified Digest",
         claims=[claim],
     )
+    review_digest = draft_digest.model_copy(
+        update={
+            "status": DigestStatus.REVIEW,
+            "claims": [
+                claim.model_copy(update={"validation_status": ClaimValidationStatus.UNSUPPORTED})
+            ],
+        }
+    )
 
-    repo.get_digest_by_id = AsyncMock(return_value=draft_digest)  # type: ignore[method-assign]
+    repo.get_digest_by_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[draft_digest, review_digest]
+    )
 
     c_model = DigestClaimModel(
         id=claim_id,
@@ -176,9 +198,11 @@ async def test_publish_digest_unsupported_claims_routes_to_review() -> None:
         created_at=datetime.now(UTC),
     )
 
+    lock_res = MagicMock()
+    lock_res.scalar_one_or_none.return_value = digest_id
     claims_res = MagicMock()
     claims_res.scalars.return_value.all.return_value = [c_model]
-    mock_session.execute.return_value = claims_res
+    mock_session.execute.side_effect = [lock_res, claims_res]
     mock_session.get.return_value = d_model
 
     resolver = InMemorySnapshotResolver()  # Resolver does not know unknown_snap_id
@@ -253,3 +277,52 @@ async def test_persist_digest_rejects_publishing_existing_draft_directly() -> No
     attempted_published = existing_draft.model_copy(update={"status": DigestStatus.PUBLISHED})
     with pytest.raises(ValueError, match=r"Cannot publish existing digest .* via persist_digest"):
         await repo.persist_digest(attempted_published)
+
+
+@pytest.mark.asyncio
+async def test_persist_digest_rejects_brand_new_digest_with_published_status() -> None:
+    """persist_digest() raises ValueError when called with status=PUBLISHED for a new digest."""
+    mock_session = AsyncMock()
+    repo = PostgresFactStore(mock_session)
+    repo.get_digest_by_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    new_published_digest = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 4),
+        status=DigestStatus.PUBLISHED,
+        title="New Published Digest",
+        claims=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Cannot persist a new digest with status='published' via "
+            r"persist_digest\(\); use publish_digest\(\)"
+        ),
+    ):
+        await repo.persist_digest(new_published_digest)
+
+
+@pytest.mark.asyncio
+async def test_persist_digest_rejects_modifying_immutable_digest_date_on_draft() -> None:
+    """persist_digest() raises ValueError when attempting to change digest_date on draft."""
+    mock_session = AsyncMock()
+    repo = PostgresFactStore(mock_session)
+
+    digest_id = new_id()
+    existing_draft = Digest(
+        id=digest_id,
+        digest_date=date(2026, 9, 4),
+        status=DigestStatus.DRAFT,
+        title="Draft Digest",
+        claims=[],
+    )
+    repo.get_digest_by_id = AsyncMock(return_value=existing_draft)  # type: ignore[method-assign]
+
+    modified_date_digest = existing_draft.model_copy(update={"digest_date": date(2026, 9, 5)})
+    expected_msg = (
+        f"Cannot modify immutable digest_date for digest {digest_id}: 2026-09-04 != 2026-09-05"
+    )
+    with pytest.raises(ValueError, match=expected_msg):
+        await repo.persist_digest(modified_date_digest)

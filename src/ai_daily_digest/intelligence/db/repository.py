@@ -776,7 +776,12 @@ class PostgresFactStore:
         return digests
 
     async def get_digest_by_id(self, digest_id: uuid.UUID) -> Digest | None:
-        """Retrieve a digest aggregate by its unique ID, preserving claim and citation order."""
+        """Retrieve a digest aggregate by its unique ID, preserving claim and citation order.
+
+        Returns digests of any status (draft, review, published) for internal tooling
+        and publication workflows, unlike list_digests() which filters strictly to
+        published digests.
+        """
         stmt = select(DigestModel).where(DigestModel.id == digest_id)
         res = await self._session.execute(stmt)
         row = res.scalar_one_or_none()
@@ -853,6 +858,13 @@ class PostgresFactStore:
                     f"Cannot publish existing digest {digest.id} via persist_digest(); "
                     "use publish_digest() to validate and transition to published"
                 )
+            # Enforce digest_date immutability at application level
+            # (mirrors trg_protect_digests_immutability trigger)
+            if existing.digest_date != digest.digest_date:
+                raise ValueError(
+                    f"Cannot modify immutable digest_date for digest {digest.id}: "
+                    f"{existing.digest_date} != {digest.digest_date}"
+                )
             if existing == digest:
                 return existing
 
@@ -881,21 +893,22 @@ class PostgresFactStore:
             await self._session.flush()
             return await self.get_digest_by_id(digest.id) or digest
 
+        if digest.status == DigestStatus.PUBLISHED:
+            raise ValueError(
+                "Cannot persist a new digest with status='published' via "
+                "persist_digest(); use publish_digest() to validate and "
+                "transition to published"
+            )
+
         now = datetime.now(UTC)
         bind = self._session.get_bind()
         is_sqlite = bind is not None and bind.dialect.name == "sqlite"
         created_at = now.isoformat() if is_sqlite else now
 
-        initial_status = (
-            DigestStatus.DRAFT.value
-            if digest.status == DigestStatus.PUBLISHED
-            else digest.status.value
-        )
-
         d_model = DigestModel(
             id=digest.id,
             digest_date=digest.digest_date,
-            status=initial_status,
+            status=digest.status.value,
             title=digest.title,
             created_at=created_at,
         )
@@ -904,10 +917,6 @@ class PostgresFactStore:
 
         await self._insert_claims_and_citations(digest)
         await self._session.flush()
-
-        if digest.status == DigestStatus.PUBLISHED:
-            d_model.status = DigestStatus.PUBLISHED.value
-            await self._session.flush()
 
         return await self.get_digest_by_id(digest.id) or digest
 
@@ -925,9 +934,18 @@ class PostgresFactStore:
         and flushed before DigestModel.status = 'published' is flushed, ensuring
         trg_enforce_digest_publication observes supported claims.
 
+        Acquires an exclusive row lock on the parent digests row (ADR 0011 §5.1)
+        via SELECT ... FOR UPDATE before hydration and validation checks to prevent
+        concurrent child claim mutations during publication.
+
         Raises:
             ValueError: If digest_id is not found.
         """
+        stmt = select(DigestModel.id).where(DigestModel.id == digest_id).with_for_update()
+        lock_res = await self._session.execute(stmt)
+        if lock_res.scalar_one_or_none() is None:
+            raise ValueError(f"Digest with id {digest_id} not found")
+
         stored_digest = await self.get_digest_by_id(digest_id)
         if stored_digest is None:
             raise ValueError(f"Digest with id {digest_id} not found")
@@ -939,8 +957,8 @@ class PostgresFactStore:
         )
 
         claims_stmt = select(DigestClaimModel).where(DigestClaimModel.digest_id == digest_id)
-        res = await self._session.execute(claims_stmt)
-        claim_models = {c.id: c for c in res.scalars().all()}
+        claims_res = await self._session.execute(claims_stmt)
+        claim_models = {c.id: c for c in claims_res.scalars().all()}
 
         for claim in validated.claims:
             c_model = claim_models.get(claim.id)
@@ -955,7 +973,7 @@ class PostgresFactStore:
         digest_model.status = validated.status.value
 
         await self._session.flush()
-        return validated
+        return await self.get_digest_by_id(digest_id) or validated
 
 
 PostgresChangeFeedRepository = PostgresFactStore
