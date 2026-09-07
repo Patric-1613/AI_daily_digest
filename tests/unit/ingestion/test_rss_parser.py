@@ -48,21 +48,75 @@ def test_openai_sample_entries_carry_no_authors() -> None:
     assert all(entry.authors == () for entry in feed.entries)
 
 
-def test_author_and_dc_creator_elements_are_collected_in_document_order() -> None:
-    body = (
-        b"<?xml version='1.0'?>"
-        b"<rss version='2.0' xmlns:dc='http://purl.org/dc/elements/1.1/'>"
-        b"<channel><title>t</title><item>"
-        b"<title>Entry</title>"
-        b"<link>https://openai.com/index/x</link>"
-        b"<author>Ada Lovelace</author>"
-        b"<dc:creator>Alan Turing</dc:creator>"
-        b"</item></channel></rss>"
-    )
+def _item(*author_elements: str) -> bytes:
+    """One `<item>` wrapped in a minimal feed that declares the `dc:` and
+    a decoy `x:` namespace, so author-ordering tests only vary the
+    author-bearing elements."""
+    inner = "".join(author_elements)
+    return (
+        "<?xml version='1.0'?>"
+        "<rss version='2.0' xmlns:dc='http://purl.org/dc/elements/1.1/'"
+        " xmlns:x='http://example.invalid/ns'>"
+        "<channel><title>t</title><item>"
+        "<title>Entry</title><link>https://openai.com/index/x</link>"
+        f"{inner}"
+        "</item></channel></rss>"
+    ).encode()
 
-    feed = parse_rss(body)
+
+def test_author_then_dc_creator_keeps_document_order() -> None:
+    feed = parse_rss(_item("<author>Ada Lovelace</author>", "<dc:creator>Alan Turing</dc:creator>"))
 
     assert feed.entries[0].authors == ("Ada Lovelace", "Alan Turing")
+
+
+def test_dc_creator_before_author_keeps_document_order() -> None:
+    feed = parse_rss(_item("<dc:creator>Alan Turing</dc:creator>", "<author>Ada Lovelace</author>"))
+
+    assert feed.entries[0].authors == ("Alan Turing", "Ada Lovelace")
+
+
+def test_interleaved_author_and_creator_keep_document_order() -> None:
+    feed = parse_rss(
+        _item(
+            "<author>Ada Lovelace</author>",
+            "<dc:creator>Alan Turing</dc:creator>",
+            "<author>Grace Hopper</author>",
+        )
+    )
+
+    assert feed.entries[0].authors == ("Ada Lovelace", "Alan Turing", "Grace Hopper")
+
+
+def test_empty_author_elements_are_ignored() -> None:
+    feed = parse_rss(
+        _item(
+            "<author></author>",
+            "<dc:creator>   </dc:creator>",
+            "<author>Grace Hopper</author>",
+        )
+    )
+
+    assert feed.entries[0].authors == ("Grace Hopper",)
+
+
+def test_duplicate_and_mixed_case_authors_are_preserved_at_the_parser_level() -> None:
+    feed = parse_rss(
+        _item(
+            "<author>Ada Lovelace</author>",
+            "<dc:creator>ada lovelace</dc:creator>",
+            "<author>Ada Lovelace</author>",
+        )
+    )
+
+    # The parser does not dedupe or case-fold -- that is `normalize.py`'s job.
+    assert feed.entries[0].authors == ("Ada Lovelace", "ada lovelace", "Ada Lovelace")
+
+
+def test_creator_in_an_unrelated_namespace_is_not_treated_as_an_author() -> None:
+    feed = parse_rss(_item("<x:creator>Not An Author</x:creator>", "<author>Ada Lovelace</author>"))
+
+    assert feed.entries[0].authors == ("Ada Lovelace",)
 
 
 def test_entries_keep_document_order_indices() -> None:
@@ -93,6 +147,14 @@ def test_declared_entity_is_refused() -> None:
     content (AGENTS.md)."""
     with pytest.raises(RssParseError):
         parse_rss(load_fixture("openai_news_with_entity.xml"))
+
+
+def test_a_bare_doctype_with_no_entities_is_refused() -> None:
+    """`forbid_dtd=True`: a `<!DOCTYPE>` declaration is rejected outright,
+    even one that declares no entity and references none. The feed is
+    otherwise valid RSS 2.0."""
+    with pytest.raises(RssParseError):
+        parse_rss(load_fixture("openai_news_plain_dtd.xml"))
 
 
 def test_non_rss_root_is_rejected() -> None:

@@ -22,4 +22,5 @@ live sites"; live-source smoke tests are a separate opt-in suite).
 | `openai_news_offsite_entry.xml` | Valid entries around ones whose link is plain `http` or an off-allowlist host — the entry link is held to the source's fetch-safety policy before it is stored. |
 | `openai_news_malformed_xml.xml` | Truncated, never-closed tags — a source-level parse failure. |
 | `openai_news_with_entity.xml` | A `<!DOCTYPE>` with a declared/referenced entity — `defusedxml` must refuse it. |
+| `openai_news_plain_dtd.xml` | A bare `<!DOCTYPE rss>` with no entity declaration or reference, otherwise valid RSS 2.0 — `forbid_dtd=True` must still refuse it. |
 | `openai_news_empty.xml` | A syntactically valid feed with zero `<item>` elements — the zero-item source anomaly. |

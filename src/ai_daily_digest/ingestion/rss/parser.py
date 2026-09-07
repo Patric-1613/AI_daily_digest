@@ -2,9 +2,11 @@
 
 `defusedxml.ElementTree` (not stdlib `xml.etree`) because an RSS feed is
 untrusted external content (AGENTS.md) and stdlib ElementTree is
-documented as "not secure against maliciously constructed data" --
-`defusedxml` blocks entity expansion, external entities, and DTD
-retrieval.
+documented as "not secure against maliciously constructed data". The
+parse call sets `forbid_dtd=True` (on top of defusedxml's default
+`forbid_entities=True` / `forbid_external=True`), so **any** `<!DOCTYPE>`
+declaration is rejected outright -- not just one that declares or
+references an entity. A legitimate RSS 2.0 feed has no DTD.
 
 Parsing is deliberately lenient about *entries*: a `<item>` with a
 missing or empty field yields `None` for that field rather than an
@@ -34,6 +36,10 @@ _CONTENT_ENCODED = "{http://purl.org/rss/1.0/modules/content/}encoded"
 # The Dublin Core `dc:creator` element -- some feeds use it instead of
 # the plain RSS `<author>`.
 _DC_CREATOR = "{http://purl.org/dc/elements/1.1/}creator"
+# The exact author-bearing element tags this parser recognises: the plain
+# RSS `<author>` and the Dublin Core `<dc:creator>`. A `creator` in any
+# other namespace is deliberately not matched.
+_AUTHOR_TAGS = frozenset({"author", _DC_CREATOR})
 
 
 class RssParseError(Exception):
@@ -70,10 +76,11 @@ class RssFeed:
 
 def parse_rss(body: bytes) -> RssFeed:
     """Parse `body` as RSS 2.0. Raise `RssParseError` if it is not
-    well-formed XML, triggers a blocked XML feature (entity/DTD/external
-    reference), is not an `<rss>` document, or has no `<channel>`."""
+    well-formed XML, contains **any** `<!DOCTYPE>` declaration, triggers a
+    blocked XML feature (entity expansion / external reference), is not an
+    `<rss>` document, or has no `<channel>`."""
     try:
-        root = _defused_fromstring(body)
+        root = _defused_fromstring(body, forbid_dtd=True)
     except (_DefusedParseError, _DefusedXmlException, ValueError) as exc:
         raise RssParseError(f"could not parse feed as XML: {type(exc).__name__}") from exc
 
@@ -102,13 +109,14 @@ def _parse_entry(item: Element, index: int) -> RssEntry:
         categories=tuple(
             value for value in (_text(node) for node in item.findall("category")) if value
         ),
-        # `<author>` and `<dc:creator>` in document order; normalization
-        # (trim / NFC / dedupe) is `normalize.py`'s job.
+        # `<author>` and `<dc:creator>` in true XML document order -- the
+        # item's children are walked once, not queried tag-by-tag (which
+        # would group all `<author>` before all `<dc:creator>`). Empty
+        # elements are skipped; duplicates and case are preserved here,
+        # `normalize.py` owns trimming / NFC / dedupe.
         authors=tuple(
             value
-            for value in (
-                _text(node) for node in (*item.findall("author"), *item.findall(_DC_CREATOR))
-            )
+            for value in (_text(child) for child in item if child.tag in _AUTHOR_TAGS)
             if value
         ),
         pub_date_raw=_text(item.find("pubDate")),
