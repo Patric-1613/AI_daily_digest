@@ -7,9 +7,13 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.types import Lifespan
 
 from ai_daily_digest.delivery.api.dependencies import (
     ReadinessProbe,
+    ReadinessRegistry,
+    SourceItemFeedRepositoryFactory,
     build_readiness_registry,
 )
 from ai_daily_digest.delivery.api.errors import (
@@ -31,6 +35,47 @@ LOGGER = logging.getLogger(__name__)
 type RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
+def _validate_repository_wiring(
+    *,
+    fixed_repository: SourceItemFeedRepository | None,
+    database_session_factory: async_sessionmaker[AsyncSession] | None,
+    repository_factory: SourceItemFeedRepositoryFactory | None,
+    database_readiness_probe: ReadinessProbe | None,
+) -> bool:
+    """Validate repository lifecycle combinations and report whether the route is enabled."""
+    has_scoped_session = database_session_factory is not None
+    has_scoped_repository = repository_factory is not None
+    if has_scoped_session != has_scoped_repository:
+        raise ValueError(
+            "database_session_factory and source_item_feed_repository_factory "
+            "must be configured together"
+        )
+    if fixed_repository is not None and has_scoped_repository:
+        raise ValueError("configure either a fixed or request-scoped repository, not both")
+    if has_scoped_repository and database_readiness_probe is None:
+        raise ValueError("a database readiness probe is required for a database-backed route")
+    return fixed_repository is not None or has_scoped_repository
+
+
+def _build_readiness_configuration(
+    *,
+    required_dependencies: Iterable[str],
+    readiness_probes: Mapping[str, ReadinessProbe] | None,
+    database_readiness_probe: ReadinessProbe | None,
+) -> ReadinessRegistry:
+    """Merge the optional database probe without hiding duplicate caller input."""
+    merged_probes = dict(readiness_probes or {})
+    merged_required = tuple(required_dependencies)
+    if database_readiness_probe is not None:
+        merged_probes["database"] = database_readiness_probe
+        if "database" not in merged_required:
+            merged_required = (*merged_required, "database")
+    return build_readiness_registry(
+        required_dependencies=merged_required,
+        probes=merged_probes,
+    )
+
+
 def create_app(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     *,
     docs_enabled: bool = True,
@@ -38,9 +83,12 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     readiness_probes: Mapping[str, ReadinessProbe] | None = None,
     database_readiness_probe: ReadinessProbe | None = None,
     source_item_feed_repository: SourceItemFeedRepository | None = None,
+    database_session_factory: async_sessionmaker[AsyncSession] | None = None,
+    source_item_feed_repository_factory: SourceItemFeedRepositoryFactory | None = None,
     cursor_codec: CursorCodec | None = None,
     cursor_signing_key: bytes | None = None,
     frontend_origin: str | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     """Create an independent, side-effect-free FastAPI application instance.
 
@@ -56,7 +104,11 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     `"database"` itself.
 
     `source_item_feed_repository`, when given, is stored on `app.state`
-    and mounts `GET /v1/updates` (ADR 0008 PR 4). Mounting is
+    and mounts `GET /v1/updates` (ADR 0008 PR 4). Production instead
+    passes a paired `database_session_factory` and
+    `source_item_feed_repository_factory`; the dependency then opens and
+    closes one short-lived session per request (ADR 0002 section 13).
+    Mounting is
     fail-closed on cursor configuration: a configured repository with
     neither `cursor_codec` nor `cursor_signing_key` raises `ValueError`
     at `create_app()` time rather than serving pagination with no way to
@@ -66,21 +118,23 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     to that exact origin without credentials, permitting GET and POST
     methods and standard headers.
     """
-    merged_probes = dict(readiness_probes or {})
+    repository_is_configured = _validate_repository_wiring(
+        fixed_repository=source_item_feed_repository,
+        database_session_factory=database_session_factory,
+        repository_factory=source_item_feed_repository_factory,
+        database_readiness_probe=database_readiness_probe,
+    )
+
     # A tuple, not `set(required_dependencies)`: build_readiness_registry()
     # itself rejects a duplicate name ("required dependency names must
     # be unique") -- silently deduplicating here would swallow that
     # caller mistake instead of surfacing it. "database" is appended
     # only when it is not already present, so create_app() never
     # introduces a duplicate of its own.
-    merged_required = tuple(required_dependencies)
-    if database_readiness_probe is not None:
-        merged_probes["database"] = database_readiness_probe
-        if "database" not in merged_required:
-            merged_required = (*merged_required, "database")
-    readiness_registry = build_readiness_registry(
-        required_dependencies=merged_required,
-        probes=merged_probes,
+    readiness_registry = _build_readiness_configuration(
+        required_dependencies=required_dependencies,
+        readiness_probes=readiness_probes,
+        database_readiness_probe=database_readiness_probe,
     )
     app = FastAPI(
         title=API_TITLE,
@@ -91,9 +145,12 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
         redoc_url="/redoc" if docs_enabled else None,
         contact=None,
         servers=None,
+        lifespan=lifespan,
     )
     app.state.readiness_registry = readiness_registry
     app.state.source_item_feed_repository = source_item_feed_repository
+    app.state.database_session_factory = database_session_factory
+    app.state.source_item_feed_repository_factory = source_item_feed_repository_factory
 
     if frontend_origin is not None:
         app.add_middleware(
@@ -108,7 +165,7 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
         app.state.cursor_codec = cursor_codec
     elif cursor_signing_key is not None:
         app.state.cursor_codec = CursorCodec(cursor_signing_key)
-    elif source_item_feed_repository is not None:
+    elif repository_is_configured:
         raise ValueError(
             "cursor_codec or cursor_signing_key is required when "
             "source_item_feed_repository is configured"
@@ -140,6 +197,6 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
 
     install_exception_handlers(app)
     app.include_router(health_router)
-    if source_item_feed_repository is not None:
+    if repository_is_configured:
         app.include_router(updates_router)
     return app

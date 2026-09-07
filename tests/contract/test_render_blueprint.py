@@ -18,8 +18,9 @@ def _blueprint() -> dict[str, Any]:
     return loaded
 
 
-def test_blueprint_contains_only_free_api_and_static_site_services() -> None:
+def test_blueprint_contains_only_free_api_static_site_and_postgres() -> None:
     services = _blueprint()["services"]
+    databases = _blueprint()["databases"]
 
     assert [(service["name"], service["runtime"], service["plan"]) for service in services] == [
         ("ai-daily-digest-api", "python", "free"),
@@ -27,24 +28,31 @@ def test_blueprint_contains_only_free_api_and_static_site_services() -> None:
     ]
     assert all(service["type"] == "web" for service in services)
     assert not any(service.get("runtime") in {"cron", "postgres"} for service in services)
+    assert databases == [
+        {
+            "name": "ai-daily-digest-db",
+            "plan": "free",
+            "databaseName": "ai_daily_digest",
+            "user": "ai_daily_digest",
+        }
+    ]
 
 
-def test_api_start_command_targets_importable_factory_and_liveness_check() -> None:
+def test_api_start_script_migrates_before_starting_importable_factory() -> None:
     api = _blueprint()["services"][0]
     command = shlex.split(api["startCommand"])
+    start_script = Path(command[0])
+    script = start_script.read_text(encoding="utf-8")
 
-    assert command == [
-        ".venv/bin/uvicorn",
-        UVICORN_FACTORY,
-        "--factory",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "$PORT",
-    ]
+    assert command == ["./scripts/start_render.sh"]
+    assert start_script.stat().st_mode & 0o111
+    assert script.index(".venv/bin/alembic upgrade head") < script.index("exec .venv/bin/uvicorn")
+    assert UVICORN_FACTORY in script
+    assert '--factory --host 0.0.0.0 --port "${PORT}"' in script
     assert import_from_string(UVICORN_FACTORY) is create_production_app
     assert api["healthCheckPath"] == "/v1/health/live"
     assert api["buildCommand"] == "pip install uv && uv sync --locked --no-dev --no-editable"
+    assert "preDeployCommand" not in api
 
 
 def test_blueprint_prompts_for_public_origins_and_generates_no_committed_secret() -> None:
@@ -56,6 +64,13 @@ def test_blueprint_prompts_for_public_origins_and_generates_no_committed_secret(
     assert api_env["PAGINATION_CURSOR_SECRET"] == {
         "key": "PAGINATION_CURSOR_SECRET",
         "generateValue": True,
+    }
+    assert api_env["DATABASE_URL"] == {
+        "key": "DATABASE_URL",
+        "fromDatabase": {
+            "name": "ai-daily-digest-db",
+            "property": "connectionString",
+        },
     }
     assert frontend_env["VITE_API_BASE_URL"] == {
         "key": "VITE_API_BASE_URL",
