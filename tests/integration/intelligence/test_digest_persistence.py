@@ -199,7 +199,7 @@ async def test_publish_unsupported_digest_routes_to_review(
     """publish_digest() routes ungrounded digests to review without firing publication trigger."""
     item_id, snap_id = await _create_snapshot(
         database_session,
-        content_text="Article discussing models without any mention of 1000 parameters.",
+        content_text="Article discussing models without any benchmark figures.",
     )
 
     repo = PostgresDigestRepository(database_session)
@@ -229,7 +229,7 @@ async def test_publish_unsupported_digest_routes_to_review(
         source_item_id=item_id,
         fetched_at=BASE_TIME,
         content_hash=f"hash-{snap_id}",
-        content_text="Article discussing models without any mention of 1000 parameters.",
+        content_text="Article discussing models without any benchmark figures.",
     )
     resolver = InMemorySnapshotResolver({snap_id: snap_doc})
 
@@ -346,13 +346,15 @@ async def test_get_latest_published_digest(
     database_session: AsyncSession,
 ) -> None:
     """get_latest_published_digest() returns latest published digest by (digest_date DESC, id DESC)."""
-    item_id, snap_id = await _create_snapshot(database_session, content_text="Content text")
+    item_id, snap_id = await _create_snapshot(
+        database_session, content_text="Content text with Fact 1 and Fact 2"
+    )
     snap_doc = DocumentSnapshot(
         id=snap_id,
         source_item_id=item_id,
         fetched_at=BASE_TIME,
         content_hash=f"hash-{snap_id}",
-        content_text="Content text",
+        content_text="Content text with Fact 1 and Fact 2",
     )
     resolver = InMemorySnapshotResolver({snap_id: snap_doc})
 
