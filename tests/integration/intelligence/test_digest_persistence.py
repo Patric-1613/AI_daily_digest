@@ -582,12 +582,4 @@ async def test_publish_digest_row_lock_blocks_concurrent_claim_mutation(
                 text("DELETE FROM digests WHERE id = :did"),
                 {"did": digest_id},
             )
-            await cleanup_session.execute(
-                text("DELETE FROM document_snapshots WHERE id = :sid"),
-                {"sid": snap_id},
-            )
-            await cleanup_session.execute(
-                text("DELETE FROM source_items WHERE id = :iid"),
-                {"iid": item_id},
-            )
             await cleanup_session.commit()
