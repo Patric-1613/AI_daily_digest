@@ -6,11 +6,13 @@ import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import HttpUrl
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_daily_digest.delivery.api.app import create_app
 from ai_daily_digest.delivery.api.errors import ErrorEnvelope
@@ -57,6 +59,34 @@ class InMemorySourceItemFeedRepository:
             ]
 
         return ordered[: limit + 1]
+
+
+class _ReadyProbe:
+    async def is_ready(self) -> bool:
+        return True
+
+
+class _TrackedSession:
+    def __init__(self, owner: _TrackedSessionFactory) -> None:
+        self._owner = owner
+
+    async def __aenter__(self) -> _TrackedSession:
+        self._owner.entered += 1
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        self._owner.exited += 1
+
+
+class _TrackedSessionFactory:
+    def __init__(self) -> None:
+        self.entered = 0
+        self.exited = 0
+        self.created = 0
+
+    def __call__(self) -> _TrackedSession:
+        self.created += 1
+        return _TrackedSession(self)
 
 
 def _make_source_item(
@@ -340,3 +370,50 @@ def test_create_app_requires_cursor_key_when_repository_configured() -> None:
     repo = InMemorySourceItemFeedRepository([])
     with pytest.raises(ValueError, match="cursor_codec or cursor_signing_key is required"):
         create_app(source_item_feed_repository=repo)
+
+
+def test_database_repository_is_built_with_one_short_lived_session_per_request() -> None:
+    sessions = _TrackedSessionFactory()
+    repositories: list[InMemorySourceItemFeedRepository] = []
+
+    def build_repository(_: AsyncSession) -> InMemorySourceItemFeedRepository:
+        repository = InMemorySourceItemFeedRepository([])
+        repositories.append(repository)
+        return repository
+
+    app = create_app(
+        database_readiness_probe=_ReadyProbe(),
+        database_session_factory=cast(async_sessionmaker[AsyncSession], sessions),
+        source_item_feed_repository_factory=build_repository,
+        cursor_signing_key=TEST_KEY,
+    )
+    client = TestClient(app)
+
+    assert client.get("/v1/updates").status_code == 200
+    assert client.get("/v1/updates").status_code == 200
+
+    assert len(repositories) == 2
+    assert sessions.created == 2
+    assert sessions.entered == 2
+    assert sessions.exited == 2
+
+
+def test_create_app_rejects_incomplete_or_unsafe_scoped_repository_wiring() -> None:
+    sessions = cast(async_sessionmaker[AsyncSession], _TrackedSessionFactory())
+
+    with pytest.raises(ValueError, match="must be configured together"):
+        create_app(database_session_factory=sessions)
+
+    with pytest.raises(ValueError, match="readiness probe is required"):
+        create_app(
+            database_session_factory=sessions,
+            source_item_feed_repository_factory=lambda _: InMemorySourceItemFeedRepository([]),
+        )
+
+    with pytest.raises(ValueError, match="either a fixed or request-scoped repository"):
+        create_app(
+            source_item_feed_repository=InMemorySourceItemFeedRepository([]),
+            database_readiness_probe=_ReadyProbe(),
+            database_session_factory=sessions,
+            source_item_feed_repository_factory=lambda _: InMemorySourceItemFeedRepository([]),
+        )

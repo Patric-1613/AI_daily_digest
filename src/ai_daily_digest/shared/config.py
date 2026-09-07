@@ -19,6 +19,8 @@ _DEFAULT_POOL_RECYCLE_SECONDS = 1800
 _DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 _DEFAULT_STATEMENT_TIMEOUT_MS = 10_000
 _DEFAULT_READINESS_TIMEOUT_SECONDS = 2.0
+_ASYNC_POSTGRES_SCHEME = "postgresql+psycopg"
+_PROVIDER_POSTGRES_SCHEMES = frozenset({"postgres", "postgresql"})
 
 
 @dataclass(frozen=True)
@@ -85,7 +87,7 @@ class DatabaseConfig:  # pylint: disable=too-many-instance-attributes
                 "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME connection string."
             )
         return cls(
-            database_url=database_url,
+            database_url=_normalize_database_url(database_url),
             pool_size=_int_override(source, "DATABASE_POOL_SIZE", _DEFAULT_POOL_SIZE),
             max_overflow=_int_override(source, "DATABASE_MAX_OVERFLOW", _DEFAULT_MAX_OVERFLOW),
             pool_pre_ping=_bool_override(source, "DATABASE_POOL_PRE_PING", _DEFAULT_POOL_PRE_PING),
@@ -104,6 +106,26 @@ class DatabaseConfig:  # pylint: disable=too-many-instance-attributes
                 _DEFAULT_READINESS_TIMEOUT_SECONDS,
             ),
         )
+
+
+def _normalize_database_url(database_url: str) -> str:
+    """Return a psycopg-explicit URL without exposing any URL component.
+
+    Managed PostgreSQL providers, including Render, expose connection
+    strings with a driver-neutral ``postgres://`` or ``postgresql://``
+    scheme. SQLAlchemy's async engine must be told to select psycopg 3
+    explicitly. Local and CI callers may continue to provide the canonical
+    ``postgresql+psycopg://`` form directly.
+    """
+    scheme, separator, remainder = database_url.partition("://")
+    normalized_scheme = scheme.lower()
+    if not separator or not remainder:
+        raise ValueError("DATABASE_URL must be a complete PostgreSQL connection string")
+    if normalized_scheme == _ASYNC_POSTGRES_SCHEME:
+        return f"{_ASYNC_POSTGRES_SCHEME}://{remainder}"
+    if normalized_scheme in _PROVIDER_POSTGRES_SCHEMES:
+        return f"{_ASYNC_POSTGRES_SCHEME}://{remainder}"
+    raise ValueError("DATABASE_URL must use a PostgreSQL connection-string scheme")
 
 
 def _int_override(source: Mapping[str, str], name: str, default: int) -> int:

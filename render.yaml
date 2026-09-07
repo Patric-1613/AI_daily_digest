@@ -4,13 +4,17 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install uv && uv sync --locked --no-dev --no-editable
-    startCommand: .venv/bin/uvicorn ai_daily_digest.delivery.api.production:create_production_app --factory --host 0.0.0.0 --port $PORT
+    startCommand: ./scripts/start_render.sh
     healthCheckPath: /v1/health/live
     envVars:
       - key: FRONTEND_ORIGIN
         sync: false
       - key: PAGINATION_CURSOR_SECRET
         generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-daily-digest-db
+          property: connectionString
       - key: DOCS_ENABLED
         value: "true"
 
@@ -28,3 +32,9 @@ services:
       - type: rewrite
         source: "/*"
         destination: /index.html
+
+databases:
+  - name: ai-daily-digest-db
+    plan: free
+    databaseName: ai_daily_digest
+    user: ai_daily_digest
