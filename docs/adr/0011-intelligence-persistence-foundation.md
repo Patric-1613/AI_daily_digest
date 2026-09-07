@@ -1,6 +1,6 @@
 # 0011 — Intelligence persistence foundation (facts, changes, digests)
 
-Status: Accepted by Person A (Patric, 2026-09-05) and Person B (author). Person C (Chamath) review deferred -- tracked in issue #68, to be completed when available.
+Status: Accepted by Person A (Patric, 2026-09-05), Person B (author), and Person C (Chamath, 2026-09-07). Person C's deferred review was completed through issue #68 after verifying the corrected equal-timestamp ordering and merged persistence implementation in PRs #59 and #67.
 Date: 2026-09-04
 
 > **Architecture alignment with ADR 0002 (amendment merged in PR #48; Status: Accepted by Persons A, B, and C via PR #65):**
