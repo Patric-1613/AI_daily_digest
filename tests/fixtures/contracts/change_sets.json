@@ -1,12 +1,18 @@
 [
   {
     "id": "01a01e6f-3640-78f0-a7bb-a6bdf029eb42",
-    "subject": { "company": "OpenAI", "product": "GPT-4o" },
+    "subject": {
+      "company": "OpenAI",
+      "product": "GPT-4o"
+    },
     "changes": [
       {
         "id": "01a01e6f-3640-7472-801d-9243499d7181",
         "change_set_id": "01a01e6f-3640-78f0-a7bb-a6bdf029eb42",
-        "subject": { "company": "OpenAI", "product": "GPT-4o" },
+        "subject": {
+          "company": "OpenAI",
+          "product": "GPT-4o"
+        },
         "field": "context_window_tokens",
         "change_type": "increased",
         "previous": {
@@ -26,8 +32,73 @@
         "review_status": "validated"
       }
     ],
-    "previous_snapshot_ids": ["019e8798-d240-7551-8296-37bdd4a08abc"],
-    "current_snapshot_ids": ["01a01e6a-a260-79e3-9a2b-1e4e705d3108"],
+    "previous_snapshot_ids": [
+      "019e8798-d240-7551-8296-37bdd4a08abc"
+    ],
+    "current_snapshot_ids": [
+      "01a01e6a-a260-79e3-9a2b-1e4e705d3108"
+    ],
+    "review_status": "validated"
+  },
+  {
+    "id": "01a074f9-3b5b-74a0-a399-02d0f1f48929",
+    "subject": {
+      "company": "Google",
+      "product": "Gemini 1.5 Pro"
+    },
+    "changes": [
+      {
+        "id": "01a074f9-3b5b-74a0-a399-02eb596baa69",
+        "change_set_id": "01a074f9-3b5b-74a0-a399-02d0f1f48929",
+        "subject": {
+          "company": "Google",
+          "product": "Gemini 1.5 Pro"
+        },
+        "field": "input_price_usd",
+        "change_type": "decreased",
+        "previous": {
+          "value": "3.50",
+          "observed_at": "2026-06-27T13:10:00Z",
+          "snapshot_id": "019f0933-8840-7353-8d3b-8cf409e24a85",
+          "source_url": "https://blog.example.com/google/gemma-2-launch"
+        },
+        "current": {
+          "value": "1.75",
+          "observed_at": "2026-08-15T18:25:00Z",
+          "snapshot_id": "01a006ab-8860-79f3-b063-70e05b6d2baa",
+          "source_url": "https://ai.example.com/gemini-api/docs/changelog#august-2026"
+        },
+        "confidence": 0.95,
+        "detected_at": "2026-09-02T10:00:00.000000Z",
+        "review_status": "validated"
+      },
+      {
+        "id": "01a074f9-3b5b-74a0-a399-02f53028e57f",
+        "change_set_id": "01a074f9-3b5b-74a0-a399-02d0f1f48929",
+        "subject": {
+          "company": "Google",
+          "product": "Gemini 1.5 Pro"
+        },
+        "field": "context_window_tokens",
+        "change_type": "disclosed",
+        "previous": null,
+        "current": {
+          "value": "2000000",
+          "observed_at": "2026-08-15T18:25:00Z",
+          "snapshot_id": "01a006ab-8860-79f3-b063-70e05b6d2baa",
+          "source_url": "https://ai.example.com/gemini-api/docs/changelog#august-2026"
+        },
+        "confidence": 0.98,
+        "detected_at": "2026-09-02T10:00:00.000000Z",
+        "review_status": "validated"
+      }
+    ],
+    "previous_snapshot_ids": [
+      "019f0933-8840-7353-8d3b-8cf409e24a85"
+    ],
+    "current_snapshot_ids": [
+      "01a006ab-8860-79f3-b063-70e05b6d2baa"
+    ],
     "review_status": "validated"
   }
 ]
