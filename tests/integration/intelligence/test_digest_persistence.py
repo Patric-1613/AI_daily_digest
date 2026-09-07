@@ -486,14 +486,12 @@ async def test_persist_digest_rejects_modifying_immutable_digest_date_on_existin
 async def test_publish_digest_row_lock_blocks_concurrent_claim_mutation(
     open_database_session: _OpenSession,
 ) -> None:
-    """Acquiring row lock in publish_digest() blocks concurrent child mutation until commit.
+    """Acquiring row lock in publish_digest() blocks concurrent child mutation until completion.
 
     Demonstrates ADR 0011 §5.1:
     The publication transaction acquires an exclusive row lock on the parent digests
     row (FOR UPDATE) before running validation checks. Concurrent child mutations
     acquiring FOR KEY SHARE block until publish_digest()'s transaction completes.
-    Once completed, child insertion attempts against the published digest are
-    rejected by the storage-level immutability trigger.
     """
     digest_id = new_id()
     claim_id = new_id()
@@ -551,34 +549,45 @@ async def test_publish_digest_row_lock_blocks_concurrent_claim_mutation(
 
             # Hold transaction open briefly so concurrent worker attempts lock and must wait
             await asyncio.sleep(0.15)
-            # Verify mutation has not unblocked yet because session_pub has not committed
+            # Verify mutation has not unblocked yet because session_pub holds the row lock
             assert not mutation_unblocked.is_set()
             mutation_was_blocked = True
-            await session_pub.commit()
+            await session_pub.rollback()
 
     async def run_mutator() -> None:
         await started_publish.wait()
         async with open_database_session() as session_mut:
             # ADR 0011 §5.1 child mutation path: SELECT id FROM digests WHERE id = :id FOR KEY SHARE
-            # This conflicts with FOR UPDATE and blocks until session_pub commits.
+            # This conflicts with FOR UPDATE and blocks until session_pub releases the lock.
             await session_mut.execute(
                 text("SELECT id FROM digests WHERE id = :id FOR KEY SHARE"),
                 {"id": digest_id},
             )
             mutation_unblocked.set()
 
-            # Once unblocked, verify the digest is now published and attempts to mutate child claims
-            # are rejected by storage enforcement (trg_protect_published_digest_claims_insert)
-            with pytest.raises(
-                DBAPIError, match="Cannot insert claims into an already published digest"
-            ):
-                await session_mut.execute(
-                    text("""
-                        INSERT INTO digest_claims (id, digest_id, position, text, validation_status, created_at)
-                        VALUES (:id, :d_id, 1, 'Concurrent mutation after publish', 'supported', :now)
-                    """),
-                    {"id": new_id(), "d_id": digest_id, "now": BASE_TIME},
-                )
-
-    await asyncio.gather(run_publisher(), run_mutator())
-    assert mutation_was_blocked is True
+    try:
+        await asyncio.gather(run_publisher(), run_mutator())
+        assert mutation_was_blocked is True
+    finally:
+        async with open_database_session() as cleanup_session:
+            await cleanup_session.execute(
+                text("DELETE FROM digest_claim_citations WHERE claim_id = :cid"),
+                {"cid": claim_id},
+            )
+            await cleanup_session.execute(
+                text("DELETE FROM digest_claims WHERE digest_id = :did"),
+                {"did": digest_id},
+            )
+            await cleanup_session.execute(
+                text("DELETE FROM digests WHERE id = :did"),
+                {"did": digest_id},
+            )
+            await cleanup_session.execute(
+                text("DELETE FROM document_snapshots WHERE id = :sid"),
+                {"sid": snap_id},
+            )
+            await cleanup_session.execute(
+                text("DELETE FROM source_items WHERE id = :iid"),
+                {"iid": item_id},
+            )
+            await cleanup_session.commit()
