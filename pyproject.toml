@@ -125,6 +125,8 @@ collect-rss = "ai_daily_digest.ingestion.rss.run:main"
 # Compatibility alias for the command PR #71 shipped -- equivalent to
 # `collect-rss --source-id openai_news`.
 collect-openai-rss = "ai_daily_digest.ingestion.rss.run:main_openai_news"
+# Intelligence production command for one daily digest generation run
+generate-digest = "ai_daily_digest.intelligence.run:main"
 
 [dependency-groups]
 dev = [
