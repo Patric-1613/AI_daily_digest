@@ -22,10 +22,17 @@ def test_blueprint_contains_only_free_api_static_site_and_postgres() -> None:
     services = _blueprint()["services"]
     databases = _blueprint()["databases"]
 
-    assert [(service["name"], service["runtime"], service["plan"]) for service in services] == [
-        ("ai-daily-digest-api", "python", "free"),
-        ("ai-daily-digest-web", "static", "free"),
-    ]
+    api, frontend = services
+    assert (api["name"], api["runtime"], api["plan"]) == (
+        "ai-daily-digest-api",
+        "python",
+        "free",
+    )
+    assert (frontend["name"], frontend["runtime"]) == (
+        "ai-daily-digest-web",
+        "static",
+    )
+    assert "plan" not in frontend
     assert all(service["type"] == "web" for service in services)
     assert not any(service.get("runtime") in {"cron", "postgres"} for service in services)
     assert databases == [
