@@ -866,7 +866,7 @@ async def test_rerun_with_new_material_routes_to_review_without_discarding_new_c
         await _create_item_and_snapshot(
             session,
             title="OpenAI GPT-4o Initial Baseline",
-            content_text="OpenAI introduces GPT-4o with 128000 tokens and 1000 reasoning.",
+            content_text="OpenAI introduces GPT-4o with 128000 tokens and 5 USD input price.",
             fetched_at=window_start - timedelta(hours=4),
         )
         await session.commit()
@@ -883,12 +883,12 @@ async def test_rerun_with_new_material_routes_to_review_without_discarding_new_c
                     confidence=0.95,
                 )
             )
-        if "1000 reasoning" in prompt:
+        if "5 USD" in prompt:
             facts.append(
                 FactCandidate(
-                    field="reasoning_tokens",
-                    value="1000",
-                    quoted_span="1000 reasoning",
+                    field="input_price_usd",
+                    value="5",
+                    quoted_span="5 USD",
                     confidence=0.95,
                 )
             )
@@ -901,12 +901,12 @@ async def test_rerun_with_new_material_routes_to_review_without_discarding_new_c
                     confidence=0.95,
                 )
             )
-        if "2000 reasoning" in prompt:
+        if "10 USD" in prompt:
             facts.append(
                 FactCandidate(
-                    field="reasoning_tokens",
-                    value="2000",
-                    quoted_span="2000 reasoning",
+                    field="input_price_usd",
+                    value="10",
+                    quoted_span="10 USD",
                     confidence=0.95,
                 )
             )
@@ -945,12 +945,12 @@ async def test_rerun_with_new_material_routes_to_review_without_discarding_new_c
     assert report1.claim_count == 1
     assert report1.digest_id is not None
 
-    # 4. Add genuinely NEW/CHANGED snapshot in the same window updating reasoning_tokens
+    # 4. Add genuinely NEW/CHANGED snapshot in the same window updating input_price_usd
     async with open_database_session() as session:
         await _create_item_and_snapshot(
             session,
             title="OpenAI GPT-4o Upgrade 2",
-            content_text="OpenAI updates GPT-4o with 2000 reasoning.",
+            content_text="OpenAI updates GPT-4o with 10 USD input price.",
             fetched_at=window_start + timedelta(hours=6),
         )
         await session.commit()
