@@ -528,3 +528,236 @@ async def test_run_pipeline_reuses_change_set_id_for_same_subject(  # pylint: di
     # Different subject must have a different change_set_id
     assert recorded_change_set_ids[2][0] == subj_b
     assert recorded_change_set_ids[2][1] != recorded_change_set_ids[0][1]
+
+
+@pytest.mark.asyncio
+async def test_failed_items_forces_digest_to_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    item1 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k1",
+        source_id="s1",
+        publisher="OpenAI",
+        title="Valid Item",
+        canonical_url="https://example.com/1",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap1 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item1.id,
+        content_hash="h1",
+        fetched_at=now,
+        content_text="Valid content",
+    )
+    item2 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k2",
+        source_id="s1",
+        publisher="OpenAI",
+        title="Failing Item",
+        canonical_url="https://example.com/2",
+        first_fetched_at=now + timedelta(minutes=5),
+        language="en",
+    )
+    snap2 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item2.id,
+        content_hash="h2",
+        fetched_at=now + timedelta(minutes=5),
+        content_text="Failing content",
+    )
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.select_snapshots_in_window",
+        AsyncMock(return_value=[(item1, snap1), (item2, snap2)]),
+    )
+
+    async def _mock_resolve_and_extract(
+        item: Any, *args: Any, **kwargs: Any
+    ) -> tuple[Subject | None, list[Any]]:
+        del args, kwargs
+        if item.title == "Failing Item":
+            raise RuntimeError("Extraction failed on item2")
+        return Subject(company="OpenAI", product="GPT-4o"), []
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._resolve_and_extract_item",
+        _mock_resolve_and_extract,
+    )
+
+    persisted_digests: list[Digest] = []
+
+    class MockStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def detect_and_persist_changes(self, *args: Any, **kwargs: Any) -> list[Any]:
+            del args, kwargs
+            return []
+
+        async def get_changes_for_snapshot(self, *args: Any, **kwargs: Any) -> list[Any]:
+            del args, kwargs
+            return []
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            persisted_digests.append(digest)
+            return digest
+
+        async def publish_digest(self, *args: Any, **kwargs: Any) -> Digest:
+            raise AssertionError("publish_digest should never be called when items failed")
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
+
+    # Mock assemble_digest to return a digest with PUBLISHED status
+    dummy_digest = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 7),
+        status=DigestStatus.PUBLISHED,
+        title="AI Daily Digest",
+        published_at=now,
+        claims=[],
+    )
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.assemble_digest",
+        lambda *args, **kwargs: dummy_digest,
+    )
+
+    class MockResult:
+        def all(self) -> list[Any]:
+            return []
+
+    class MockSession:
+        async def execute(self, _stmt: Any) -> Any:
+            return MockResult()
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    report = await run_pipeline(
+        session_factory=cast(Any, mock_session_factory),
+        digest_date=date(2026, 9, 7),
+        window_start=now - timedelta(hours=24),
+        window_end=now,
+    )
+
+    # Must be forced to REVIEW and unpublished
+    assert len(persisted_digests) == 1
+    assert persisted_digests[0].status == DigestStatus.REVIEW
+    assert report.digest_status == "review"
+    assert report.published is False
+    assert report.status == "partial"
+    assert report.failed_snapshot_count == 1
+
+
+@pytest.mark.asyncio
+async def test_conversion_and_resolver_failure_isolated_to_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    # Item 1 has invalid canonical_url which fails pydantic HttpUrl in to_source_item
+    item1 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k1",
+        source_id="s1",
+        publisher="OpenAI",
+        title="Invalid URL Item",
+        canonical_url="not-a-valid-url",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap1 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item1.id,
+        content_hash="h1",
+        fetched_at=now,
+        content_text="Text 1",
+    )
+    # Item 2 is valid
+    item2 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k2",
+        source_id="s1",
+        publisher="OpenAI",
+        title="Valid Item 2",
+        canonical_url="https://example.com/2",
+        first_fetched_at=now + timedelta(minutes=5),
+        language="en",
+    )
+    snap2 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item2.id,
+        content_hash="h2",
+        fetched_at=now + timedelta(minutes=5),
+        content_text="Text 2",
+    )
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.select_snapshots_in_window",
+        AsyncMock(return_value=[(item1, snap1), (item2, snap2)]),
+    )
+
+    processed_titles: list[str] = []
+
+    async def _mock_resolve_and_extract(
+        item: Any, *args: Any, **kwargs: Any
+    ) -> tuple[Subject | None, list[Any]]:
+        del args, kwargs
+        processed_titles.append(item.title)
+        return Subject(company="OpenAI", product="GPT-4o"), []
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._resolve_and_extract_item",
+        _mock_resolve_and_extract,
+    )
+
+    class MockStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def detect_and_persist_changes(self, *args: Any, **kwargs: Any) -> list[Any]:
+            del args, kwargs
+            return []
+
+        async def get_changes_for_snapshot(self, *args: Any, **kwargs: Any) -> list[Any]:
+            del args, kwargs
+            return []
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            return digest
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
+
+    class MockResult:
+        def all(self) -> list[Any]:
+            return []
+
+    class MockSession:
+        async def execute(self, _stmt: Any) -> Any:
+            return MockResult()
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    report = await run_pipeline(
+        session_factory=cast(Any, mock_session_factory),
+        digest_date=date(2026, 9, 7),
+        window_start=now - timedelta(hours=24),
+        window_end=now,
+    )
+
+    # Item 1 failed in to_source_item, but item 2 was processed!
+    assert report.failed_snapshot_count == 1
+    assert report.processed_snapshot_count == 1
+    assert processed_titles == ["Valid Item 2"]
+    assert report.failures[0]["item_id"] == str(item1.id)
+    assert report.failures[0]["error"] == "ValidationError"
+

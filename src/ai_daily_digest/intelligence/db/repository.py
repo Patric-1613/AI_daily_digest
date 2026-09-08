@@ -1,4 +1,4 @@
-"""PostgreSQL FactStore, change persistence, and feed repository — ADR 0011 §5."""
+"""PostgreSQL FactStore, change persistence, and feed repository — ADR 0011 §5."""  # pylint: disable=too-many-lines
 
 from __future__ import annotations
 
@@ -97,6 +97,37 @@ class _ChangeMaterial:
     previous: FactObservation
     current: FactObservation
     confidence: Confidence
+
+
+def _row_to_change(change_row: ChangeModel, company_name: str, product_name: str) -> Change:
+    prev_obs: FactObservation | None = None
+    if (
+        change_row.previous_snapshot_id is not None
+        or change_row.previous_observed_at is not None
+        or change_row.previous_value is not None
+    ):
+        prev_obs = FactObservation(
+            value=change_row.previous_value,
+            observed_at=change_row.previous_observed_at,
+            snapshot_id=change_row.previous_snapshot_id,
+        )
+    curr_obs = FactObservation(
+        value=change_row.current_value,
+        observed_at=change_row.current_observed_at,
+        snapshot_id=change_row.current_snapshot_id,
+    )
+    return Change(
+        id=change_row.id,
+        change_set_id=change_row.change_set_id,
+        subject=Subject(company=company_name, product=product_name),
+        field=change_row.field,
+        change_type=change_row.change_type,
+        previous=prev_obs,
+        current=curr_obs,
+        confidence=change_row.confidence,
+        detected_at=change_row.detected_at,
+        review_status=change_row.review_status,
+    )
 
 
 class PostgresFactStore:
@@ -576,6 +607,21 @@ class PostgresFactStore:
         res = await self._session.execute(stmt)
         return list(res.scalars().all())
 
+    async def get_changes_for_snapshot(self, snapshot_id: uuid.UUID) -> list[Change]:
+        """Fetch existing committed changes for a snapshot to support resumable retries."""
+        stmt = (
+            select(ChangeModel, SubjectModel.company, SubjectModel.product)
+            .join(
+                SubjectModel,
+                (ChangeModel.company_key == SubjectModel.company_key)
+                & (ChangeModel.product_key == SubjectModel.product_key),
+            )
+            .where(ChangeModel.current_snapshot_id == snapshot_id)
+            .order_by(ChangeModel.position.asc())
+        )
+        res = await self._session.execute(stmt)
+        return [_row_to_change(r, c, p) for r, c, p in res.all()]
+
     async def derive_changeset_citations(
         self, change_set_id: uuid.UUID
     ) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
@@ -653,39 +699,7 @@ class PostgresFactStore:
         res = await self._session.execute(stmt)
         rows = res.all()
 
-        results: list[Change] = []
-        for change_row, company_name, product_name in rows:
-            prev_obs: FactObservation | None = None
-            if (
-                change_row.previous_snapshot_id is not None
-                or change_row.previous_observed_at is not None
-                or change_row.previous_value is not None
-            ):
-                prev_obs = FactObservation(
-                    value=change_row.previous_value,
-                    observed_at=change_row.previous_observed_at,
-                    snapshot_id=change_row.previous_snapshot_id,
-                )
-            curr_obs = FactObservation(
-                value=change_row.current_value,
-                observed_at=change_row.current_observed_at,
-                snapshot_id=change_row.current_snapshot_id,
-            )
-            results.append(
-                Change(
-                    id=change_row.id,
-                    change_set_id=change_row.change_set_id,
-                    subject=Subject(company=company_name, product=product_name),
-                    field=change_row.field,
-                    change_type=change_row.change_type,
-                    previous=prev_obs,
-                    current=curr_obs,
-                    confidence=change_row.confidence,
-                    detected_at=change_row.detected_at,
-                    review_status=change_row.review_status,
-                )
-            )
-        return results
+        return [_row_to_change(r, c, p) for r, c, p in rows]
 
     async def list_digests(
         self,

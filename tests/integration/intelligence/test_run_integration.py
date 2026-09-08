@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -511,3 +512,200 @@ async def test_multiple_snapshots_same_subject_share_one_changeset(  # pylint: d
         )
         change_sets = list(cs_res.scalars().all())
         assert len(change_sets) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_item_forces_persisted_digest_to_review(
+    open_database_session: _OpenSession,
+) -> None:
+    """A run containing failed items forces the persisted digest to review/unpublished status."""
+    digest_date = date(2026, 9, 10)
+    window_start = datetime(2026, 9, 10, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 11, 0, 0, 0, tzinfo=UTC)
+
+    async with open_database_session() as session:
+        # Item 1: Valid item
+        _, _snap1_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Working",
+            content_text="OpenAI introduces GPT-4o with 128000 context window.",
+            fetched_at=window_start + timedelta(hours=1),
+        )
+        # Item 2: Failing item
+        _, _snap2_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Broken",
+            content_text="OpenAI introduces GPT-4o with invalid content 999999.",
+            fetched_at=window_start + timedelta(hours=2),
+        )
+        await session.commit()
+
+    def mock_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system
+        if "999999" in prompt:
+            raise RuntimeError("Extraction simulated crash")
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="128000",
+                    quoted_span="128000 context window",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    report = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=digest_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=mock_extract,
+    )
+
+    assert report.failed_snapshot_count == 1
+    assert report.digest_status == "review"
+    assert report.published is False
+    assert report.status == "partial"
+
+    # Verify directly in PostgreSQL that the persisted digest row is review, NOT published
+    async with open_database_session() as session:
+        res = await session.execute(
+            select(DigestModel).where(DigestModel.id == report.digest_id)
+        )
+        digest_row = res.scalar_one()
+        assert digest_row.status == "review"
+
+        published_res = await session.execute(
+            select(DigestModel).where(
+                DigestModel.digest_date == digest_date,
+                DigestModel.status == "published",
+            )
+        )
+        assert published_res.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_failed_digest_persistence_retry_recovers_changes(
+    open_database_session: _OpenSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry after a failed digest persistence recovers already-committed changes without loss."""
+    baseline_date = date(2026, 9, 11)
+    window_start = datetime(2026, 9, 11, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 12, 0, 0, 0, tzinfo=UTC)
+
+    # 1. Establish baseline observation before the window
+    async with open_database_session() as session:
+        _, _base_snap_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Baseline",
+            content_text="OpenAI introduces GPT-4o with 128000 tokens.",
+            fetched_at=window_start - timedelta(hours=4),
+        )
+        await session.commit()
+
+    def baseline_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system, prompt
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="128000",
+                    quoted_span="128000 tokens",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    # Run pipeline for baseline snapshot so current_facts has 128000
+    await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=date(2026, 9, 10),
+        window_start=window_start - timedelta(hours=6),
+        window_end=window_start - timedelta(hours=2),
+        extract_call_fn=baseline_extract,
+    )
+
+    # 2. Insert new snapshot in the test window that modifies context_window_tokens to 256000
+    async with open_database_session() as session:
+        _, test_snap_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Upgrade",
+            content_text="OpenAI updates GPT-4o with 256000 tokens.",
+            fetched_at=window_start + timedelta(hours=2),
+        )
+        await session.commit()
+
+    def upgrade_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system, prompt
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="256000",
+                    quoted_span="256000 tokens",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    # 3. Simulate failure during final digest persistence in Run 1
+    original_persist = PostgresFactStore.persist_digest
+
+    async def _failing_persist(self: PostgresFactStore, digest: Any) -> Any:
+        raise RuntimeError("Simulated digest persistence database crash")
+
+    monkeypatch.setattr(PostgresFactStore, "persist_digest", _failing_persist)
+
+    with pytest.raises(RuntimeError, match="Simulated digest persistence database crash"):
+        await run_pipeline(
+            session_factory=open_database_session,
+            digest_date=baseline_date,
+            window_start=window_start,
+            window_end=window_end,
+            extract_call_fn=upgrade_extract,
+        )
+
+    # Verify that Item's change WAS committed to changes table, but NO digest was persisted
+    async with open_database_session() as session:
+        res_changes = await session.execute(
+            select(ChangeModel).where(ChangeModel.current_snapshot_id == test_snap_id)
+        )
+        committed_changes = list(res_changes.scalars().all())
+        assert len(committed_changes) == 1
+        assert committed_changes[0].current_value == "256000"
+
+        res_digest = await session.execute(
+            select(DigestModel).where(DigestModel.digest_date == baseline_date)
+        )
+        assert res_digest.scalar_one_or_none() is None
+
+    # 4. Run 2: The Retry (without failure)
+    monkeypatch.setattr(PostgresFactStore, "persist_digest", original_persist)
+
+    retry_report = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=baseline_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=upgrade_extract,
+    )
+
+    # Resumable recovery: even though detect_and_persist_changes emitted no new change (already in current_facts),
+    # get_changes_for_snapshot recovered the committed change!
+    assert retry_report.extracted_change_count == 1
+    assert retry_report.claim_count == 1
+    assert retry_report.digest_status == "published"
+    assert retry_report.published is True
+
+    async with open_database_session() as session:
+        res_published = await session.execute(
+            select(DigestModel).where(
+                DigestModel.digest_date == baseline_date,
+                DigestModel.status == "published",
+            )
+        )
+        published_digest = res_published.scalar_one()
+        assert published_digest.id == retry_report.digest_id
+

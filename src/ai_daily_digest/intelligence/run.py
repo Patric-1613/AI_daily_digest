@@ -388,12 +388,12 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
     change_set_ids: dict[Subject, uuid.UUID] = {}
 
     for item_row, snapshot_row in candidates:
-        item = to_source_item(item_row)
-        snapshot = to_document_snapshot(snapshot_row)
-        known_snapshot_ids.add(snapshot.id)
-        snapshot_resolver.add(snapshot)
-
         try:
+            item = to_source_item(item_row)
+            snapshot = to_document_snapshot(snapshot_row)
+            known_snapshot_ids.add(snapshot.id)
+            snapshot_resolver.add(snapshot)
+
             subject, facts = await _resolve_and_extract_item(
                 item,
                 snapshot,
@@ -423,6 +423,11 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
                     extraction_version=1,
                     change_set_id=cs_id,
                 )
+                if not changes:
+                    # Resumable recovery: if no new changes were emitted (e.g. facts were already
+                    # confirmed in current_facts by an earlier attempt), recover any committed
+                    # changes for this snapshot so they are not lost from the digest.
+                    changes = await store.get_changes_for_snapshot(snapshot.id)
                 await session.commit()
 
             for change in changes:
@@ -435,14 +440,14 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
         except Exception as exc:  # pylint: disable=broad-exception-caught
             LOGGER.exception(
                 "intelligence item processing failed item_id=%s snapshot_id=%s",
-                item.id,
-                snapshot.id,
+                item_row.id,
+                snapshot_row.id,
             )
             failed_items.append(
                 {
                     "error": type(exc).__name__,
-                    "item_id": str(item.id),
-                    "snapshot_id": str(snapshot.id),
+                    "item_id": str(item_row.id),
+                    "snapshot_id": str(snapshot_row.id),
                 }
             )
 
@@ -482,6 +487,8 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
         title=title,
     )
     digest = _never_auto_publish_comparisons(digest, comparison_claim_ids)
+    if failed_items and digest.status == DigestStatus.PUBLISHED:
+        digest = digest.model_copy(update={"status": DigestStatus.REVIEW})
 
     # Digest persistence and publication transaction
     async with session_factory() as session:
