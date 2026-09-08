@@ -91,6 +91,21 @@ def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[uu
     return digest
 
 
+def _claims_equivalent(
+    claims_a: Sequence[DigestClaim],
+    claims_b: Sequence[DigestClaim],
+) -> bool:
+    """Check whether two sequences of claims have identical claim text and citations."""
+    if len(claims_a) != len(claims_b):
+        return False
+
+    def _sig(claim: DigestClaim) -> tuple[str, tuple[str, ...]]:
+        sorted_citations = tuple(sorted(str(cid) for cid in claim.citation_snapshot_ids))
+        return (claim.text.strip(), sorted_citations)
+
+    return sorted(_sig(c) for c in claims_a) == sorted(_sig(c) for c in claims_b)
+
+
 def to_source_item(row: SourceItemRow) -> SourceItem:
     """Convert SourceItemRow ORM instance to domain SourceItem."""
     return SourceItem(
@@ -498,9 +513,28 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
     async with session_factory() as session:
         store = PostgresFactStore(session)
         existing_published = await store.get_published_digest_by_date(digest_date)
-        if existing_published is not None:
+        if (
+            existing_published is not None
+            and not failed_items
+            and _claims_equivalent(digest.claims, existing_published.claims)
+        ):
+            LOGGER.info(
+                "published digest already exists for %s (id=%s) with equivalent claims; "
+                "reusing existing digest on replay",
+                digest_date,
+                existing_published.id,
+            )
             final_digest = existing_published
         else:
+            if existing_published is not None:
+                LOGGER.warning(
+                    "published digest already exists for %s (id=%s) but assembled digest "
+                    "has new/differing claims; routing to review",
+                    digest_date,
+                    existing_published.id,
+                )
+                digest = digest.model_copy(update={"status": DigestStatus.REVIEW})
+
             digest_to_persist = (
                 digest.model_copy(update={"status": DigestStatus.DRAFT})
                 if digest.status == DigestStatus.PUBLISHED
@@ -518,11 +552,14 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
             await session.commit()
 
     completed_at = clock()
-    status = (
-        "published"
-        if final_digest.status == DigestStatus.PUBLISHED and not failed_items
-        else ("partial" if failed_items or final_digest.status == DigestStatus.REVIEW else "draft")
-    )
+    if final_digest.status == DigestStatus.PUBLISHED and not failed_items:
+        status = "published"
+    elif failed_items:
+        status = "partial"
+    elif final_digest.status == DigestStatus.REVIEW:
+        status = "review"
+    else:
+        status = "draft"
 
     return DigestRunReport(
         digest_id=final_digest.id,

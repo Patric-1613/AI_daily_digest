@@ -16,6 +16,7 @@ import pytest
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
 from ai_daily_digest.intelligence.run import (
     DigestRunReport,
+    _claims_equivalent,
     _emit_failure,
     _never_auto_publish_comparisons,
     _parse_args,
@@ -1049,3 +1050,137 @@ async def test_run_pipeline_reuses_existing_published_digest_on_replay(
     assert report.published is True
     assert report.digest_status == "published"
     assert persist_called is False
+
+
+def test_claims_equivalent_behavior() -> None:
+    """Test claim equivalence helper under matching and mismatching conditions."""
+    cid1, cid2 = new_id(), new_id()
+    c1 = DigestClaim(id=new_id(), text="Claim A", citation_snapshot_ids=[cid1, cid2])
+    c2 = DigestClaim(id=new_id(), text="  Claim A  ", citation_snapshot_ids=[cid2, cid1])
+    c3 = DigestClaim(id=new_id(), text="Claim B", citation_snapshot_ids=[cid1])
+
+    assert _claims_equivalent([c1], [c2]) is True
+    assert _claims_equivalent([c1], [c3]) is False
+    assert _claims_equivalent([c1, c3], [c3, c2]) is True
+    assert _claims_equivalent([c1], []) is False
+    assert _claims_equivalent([], []) is True
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_routes_to_review_when_new_claims_differ_from_published_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a published digest already exists for the date, but the freshly assembled digest
+
+    has new/differing claims, the run routes to review status rather than reporting success.
+    """
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    existing_id = new_id()
+    existing_digest = Digest(
+        id=existing_id,
+        digest_date=date(2026, 9, 7),
+        status=DigestStatus.PUBLISHED,
+        title="Existing Published Digest",
+        claims=[],  # Published digest had no claims
+    )
+
+    item = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k1",
+        source_id="s1",
+        publisher="OpenAI",
+        title="Item 1",
+        canonical_url="https://example.com/1",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item.id,
+        content_hash="h1",
+        fetched_at=now,
+        content_text="Sample text",
+    )
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.select_snapshots_in_window",
+        AsyncMock(return_value=[(item, snap)]),
+    )
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._resolve_and_extract_item",
+        AsyncMock(return_value=(Subject(company="OpenAI", product="GPT-4o"), [])),
+    )
+
+    persisted_digests: list[Digest] = []
+
+    class MockStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def detect_and_persist_changes(self, *args: Any, **kwargs: Any) -> list[Any]:
+            del args, kwargs
+            return []
+
+        async def get_changes_for_snapshot(self, *args: Any, **kwargs: Any) -> list[Any]:
+            del args, kwargs
+            return []
+
+        async def get_published_digest_by_date(self, digest_date: date) -> Digest | None:
+            if digest_date == date(2026, 9, 7):
+                return existing_digest
+            return None
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            persisted_digests.append(digest)
+            return digest
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
+
+    mock_claim = DigestClaim(
+        id=new_id(),
+        text="New claim not in existing published digest",
+        citation_snapshot_ids=[snap.id],
+    )
+    new_digest_id = new_id()
+    assembled = Digest(
+        id=new_digest_id,
+        digest_date=date(2026, 9, 7),
+        status=DigestStatus.PUBLISHED,
+        title="Newly Assembled Digest",
+        claims=[mock_claim],
+    )
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.assemble_digest",
+        lambda **_kwargs: assembled,
+    )
+
+    class MockResult:
+        def all(self) -> list[Any]:
+            return []
+
+    class MockSession:
+        async def execute(self, _stmt: Any) -> Any:
+            return MockResult()
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    report = await run_pipeline(
+        session_factory=cast(Any, mock_session_factory),
+        digest_date=date(2026, 9, 7),
+        window_start=now - timedelta(hours=24),
+        window_end=now,
+    )
+
+    assert report.digest_id == new_digest_id
+    assert report.status == "review"
+    assert report.digest_status == "review"
+    assert report.published is False
+    assert exit_code_for(report) == 1
+    assert len(persisted_digests) == 1
+    assert persisted_digests[0].status == DigestStatus.REVIEW
+    assert persisted_digests[0].id == new_digest_id

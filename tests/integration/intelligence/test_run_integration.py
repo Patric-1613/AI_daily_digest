@@ -847,3 +847,144 @@ async def test_rerun_same_window_reuses_published_digest_without_duplicate(
         assert len(digests) == 1
         assert digests[0].id == report1.digest_id
         assert digests[0].status == "published"
+
+
+@pytest.mark.asyncio
+async def test_rerun_with_new_material_routes_to_review_without_discarding_new_claims(
+    open_database_session: _OpenSession,
+) -> None:
+    """When a digest is published, and a later run for the same date/window contains genuinely new material,
+
+    the runner does NOT report published/success and does NOT discard the new claims; it routes to review.
+    """
+    digest_date = date(2026, 9, 29)
+    window_start = datetime(2026, 9, 29, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 30, 0, 0, 0, tzinfo=UTC)
+
+    # 1. Seed baseline prior to the window with two facts
+    async with open_database_session() as session:
+        await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Initial Baseline",
+            content_text="OpenAI introduces GPT-4o with 128000 tokens and 1000 reasoning.",
+            fetched_at=window_start - timedelta(hours=4),
+        )
+        await session.commit()
+
+    def dynamic_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system
+        facts: list[FactCandidate] = []
+        if "128000 tokens" in prompt:
+            facts.append(
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="128000",
+                    quoted_span="128000 tokens",
+                    confidence=0.95,
+                )
+            )
+        if "1000 reasoning" in prompt:
+            facts.append(
+                FactCandidate(
+                    field="reasoning_tokens",
+                    value="1000",
+                    quoted_span="1000 reasoning",
+                    confidence=0.95,
+                )
+            )
+        if "256000 tokens" in prompt:
+            facts.append(
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="256000",
+                    quoted_span="256000 tokens",
+                    confidence=0.95,
+                )
+            )
+        if "2000 reasoning" in prompt:
+            facts.append(
+                FactCandidate(
+                    field="reasoning_tokens",
+                    value="2000",
+                    quoted_span="2000 reasoning",
+                    confidence=0.95,
+                )
+            )
+        return FactExtractionResponse(facts=facts)
+
+    await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=date(2026, 9, 27),
+        window_start=window_start - timedelta(hours=6),
+        window_end=window_start - timedelta(hours=2),
+        extract_call_fn=dynamic_extract,
+    )
+
+    # 2. Add first in-window snapshot updating context_window_tokens
+    async with open_database_session() as session:
+        await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Upgrade 1",
+            content_text="OpenAI updates GPT-4o with 256000 tokens.",
+            fetched_at=window_start + timedelta(hours=2),
+        )
+        await session.commit()
+
+    # 3. Initial publication run
+    report1 = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=digest_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=dynamic_extract,
+    )
+
+    assert report1.status == "published"
+    assert report1.published is True
+    assert report1.digest_status == "published"
+    assert report1.claim_count == 1
+    assert report1.digest_id is not None
+
+    # 4. Add genuinely NEW/CHANGED snapshot in the same window updating reasoning_tokens
+    async with open_database_session() as session:
+        await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Upgrade 2",
+            content_text="OpenAI updates GPT-4o with 2000 reasoning.",
+            fetched_at=window_start + timedelta(hours=6),
+        )
+        await session.commit()
+
+    # 5. Second run on the same date/window containing new material
+    report2 = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=digest_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=dynamic_extract,
+    )
+
+    # Must NOT report success/published: routed to review with new claims intact
+    assert report2.status == "review"
+    assert report2.published is False
+    assert report2.digest_status == "review"
+    assert report2.digest_id != report1.digest_id
+    assert report2.claim_count == 2
+
+    # 6. Database verification: published digest remains untouched; new review digest persisted
+    async with open_database_session() as session:
+        res = await session.execute(
+            select(DigestModel)
+            .where(DigestModel.digest_date == digest_date)
+            .order_by(DigestModel.created_at.asc())
+        )
+        digests = list(res.scalars().all())
+        assert len(digests) == 2
+
+        # Original published digest
+        assert digests[0].id == report1.digest_id
+        assert digests[0].status == "published"
+
+        # New review digest preserving the new material
+        assert digests[1].id == report2.digest_id
+        assert digests[1].status == "review"
