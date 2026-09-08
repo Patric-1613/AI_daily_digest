@@ -830,6 +830,23 @@ class PostgresFactStore:
         hydrated = await self._hydrate_digests([row])
         return hydrated[0] if hydrated else None
 
+    async def get_published_digest_by_date(self, digest_date: date) -> Digest | None:
+        """Retrieve the published digest for the given date, if one exists."""
+        stmt = (
+            select(DigestModel)
+            .where(
+                DigestModel.digest_date == digest_date,
+                DigestModel.status == DigestStatus.PUBLISHED.value,
+            )
+            .limit(1)
+        )
+        res = await self._session.execute(stmt)
+        row = res.scalar_one_or_none()
+        if row is None:
+            return None
+        hydrated = await self._hydrate_digests([row])
+        return hydrated[0] if hydrated else None
+
     async def _insert_claims_and_citations(self, digest: Digest) -> None:
         """Insert ordered claims and citations for a digest."""
         now = datetime.now(UTC)

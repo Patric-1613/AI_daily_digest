@@ -740,3 +740,110 @@ async def test_failed_digest_persistence_retry_recovers_changes(
         )
         published_digest = res_published.scalar_one()
         assert published_digest.id == retry_report.digest_id
+
+
+@pytest.mark.asyncio
+async def test_rerun_same_window_reuses_published_digest_without_duplicate(
+    open_database_session: _OpenSession,
+) -> None:
+    """A successful change-producing run, followed by an exact rerun of the same date/window,
+
+    reuses the existing published digest without creating a duplicate or raising an exception.
+    """
+    digest_date = date(2026, 9, 28)
+    window_start = datetime(2026, 9, 28, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 29, 0, 0, 0, tzinfo=UTC)
+
+    # 1. Seed baseline prior to the window
+    async with open_database_session() as session:
+        await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Initial",
+            content_text="OpenAI introduces GPT-4o with 128000 tokens.",
+            fetched_at=window_start - timedelta(hours=4),
+        )
+        await session.commit()
+
+    def baseline_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system, prompt
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="128000",
+                    quoted_span="128000 tokens",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=date(2026, 9, 27),
+        window_start=window_start - timedelta(hours=6),
+        window_end=window_start - timedelta(hours=2),
+        extract_call_fn=baseline_extract,
+    )
+
+    # 2. Add upgrade snapshot in the window
+    async with open_database_session() as session:
+        await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Upgrade",
+            content_text="OpenAI updates GPT-4o with 256000 tokens.",
+            fetched_at=window_start + timedelta(hours=2),
+        )
+        await session.commit()
+
+    def upgrade_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system, prompt
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="256000",
+                    quoted_span="256000 tokens",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    # 3. Run 1: Initial successful publication
+    report1 = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=digest_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=upgrade_extract,
+    )
+
+    assert report1.status == "published"
+    assert report1.published is True
+    assert report1.digest_status == "published"
+    assert report1.extracted_change_count == 1
+    assert report1.claim_count == 1
+    assert report1.digest_id is not None
+
+    # 4. Run 2: Exact rerun of the same date/window — must reuse without error
+    report2 = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=digest_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=upgrade_extract,
+    )
+
+    assert report2.status == "published"
+    assert report2.published is True
+    assert report2.digest_status == "published"
+    assert report2.digest_id == report1.digest_id
+
+    # 5. Database check: exactly 1 digest exists for this date, with status='published'
+    async with open_database_session() as session:
+        res = await session.execute(
+            select(DigestModel).where(DigestModel.digest_date == digest_date)
+        )
+        digests = list(res.scalars().all())
+        assert len(digests) == 1
+        assert digests[0].id == report1.digest_id
+        assert digests[0].status == "published"

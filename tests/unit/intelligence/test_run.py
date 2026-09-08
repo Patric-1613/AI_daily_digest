@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -365,6 +366,10 @@ async def test_run_pipeline_persists_as_draft_under_pr84_guard(
             published_calls.append(digest_id)
             return assembled_digest
 
+        async def get_published_digest_by_date(self, *args: Any, **kwargs: Any) -> Digest | None:
+            del args, kwargs
+            return None
+
     monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockPR84Store)
 
     class MockResult:
@@ -495,6 +500,10 @@ async def test_run_pipeline_reuses_change_set_id_for_same_subject(  # pylint: di
         async def persist_digest(self, digest: Digest) -> Digest:
             return digest
 
+        async def get_published_digest_by_date(self, *args: Any, **kwargs: Any) -> Digest | None:
+            del args, kwargs
+            return None
+
     monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
 
     class MockResult:
@@ -606,6 +615,10 @@ async def test_failed_items_forces_digest_to_review(monkeypatch: pytest.MonkeyPa
 
         async def publish_digest(self, *args: Any, **kwargs: Any) -> Digest:
             raise AssertionError("publish_digest should never be called when items failed")
+
+        async def get_published_digest_by_date(self, *args: Any, **kwargs: Any) -> Digest | None:
+            del args, kwargs
+            return None
 
     monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
 
@@ -729,6 +742,10 @@ async def test_conversion_and_resolver_failure_isolated_to_item(
         async def persist_digest(self, digest: Digest) -> Digest:
             return digest
 
+        async def get_published_digest_by_date(self, *args: Any, **kwargs: Any) -> Digest | None:
+            del args, kwargs
+            return None
+
     monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
 
     class MockResult:
@@ -759,3 +776,276 @@ async def test_conversion_and_resolver_failure_isolated_to_item(
     assert processed_titles == ["Valid Item 2"]
     assert report.failures[0]["item_id"] == str(item1.id)
     assert report.failures[0]["error"] == "ValidationError"
+
+
+@pytest.mark.asyncio
+async def test_item_exception_does_not_leak_message_or_traceback_to_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Per-item exceptions log only the exception type, redacting raw message and traceback."""
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    item = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k1",
+        source_id="s1",
+        publisher="OpenAI",
+        title="Valid Item",
+        canonical_url="https://example.com/item",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item.id,
+        content_hash="h1",
+        fetched_at=now,
+        content_text="Sample text",
+    )
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.select_snapshots_in_window",
+        AsyncMock(return_value=[(item, snap)]),
+    )
+
+    sentinel_marker = "private-leak-secret-content-xyz123"
+
+    async def _failing_resolve(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"boom with sensitive message: {sentinel_marker}")
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._resolve_and_extract_item",
+        _failing_resolve,
+    )
+
+    class MockStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def get_published_digest_by_date(self, *args: Any, **kwargs: Any) -> Digest | None:
+            del args, kwargs
+            return None
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            return digest
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
+
+    class MockResult:
+        def all(self) -> list[Any]:
+            return []
+
+    class MockSession:
+        async def execute(self, _stmt: Any) -> Any:
+            return MockResult()
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    with caplog.at_level(logging.INFO):
+        report = await run_pipeline(
+            session_factory=cast(Any, mock_session_factory),
+            digest_date=date(2026, 9, 7),
+            window_start=now - timedelta(hours=24),
+            window_end=now,
+        )
+
+    assert report.failed_snapshot_count == 1
+    assert sentinel_marker not in caplog.text
+    err_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(err_records) == 1
+    assert getattr(err_records[0], "exception_type", None) == "RuntimeError"
+    assert err_records[0].exc_info is None
+
+
+@pytest.mark.asyncio
+async def test_comparison_exception_does_not_leak_message_or_traceback_to_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Comparison exceptions log only the exception type, redacting raw message and traceback."""
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    item1 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k1",
+        source_id="s1",
+        publisher="OpenAI",
+        title="Item 1",
+        canonical_url="https://example.com/1",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap1 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item1.id,
+        content_hash="h1",
+        fetched_at=now,
+        content_text="Text 1",
+    )
+    item2 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k2",
+        source_id="s1",
+        publisher="Anthropic",
+        title="Item 2",
+        canonical_url="https://example.com/2",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap2 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item2.id,
+        content_hash="h2",
+        fetched_at=now,
+        content_text="Text 2",
+    )
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.select_snapshots_in_window",
+        AsyncMock(return_value=[(item1, snap1), (item2, snap2)]),
+    )
+
+    async def _mock_resolve(
+        item: Any, *_args: Any, **_kwargs: Any
+    ) -> tuple[Subject | None, list[Any]]:
+        company = "OpenAI" if item.publisher == "OpenAI" else "Anthropic"
+        return Subject(company=company, product="Model"), []
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._resolve_and_extract_item",
+        _mock_resolve,
+    )
+
+    sentinel_marker = "sensitive-comparison-secret-999"
+
+    async def _failing_build_facts(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"comparison failed with sentinel: {sentinel_marker}")
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._build_fact_table_from_postgres",
+        _failing_build_facts,
+    )
+
+    class MockStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def detect_and_persist_changes(self, *args: Any, **kwargs: Any) -> list[Any]:
+            del args, kwargs
+            return []
+
+        async def get_changes_for_snapshot(self, *args: Any, **kwargs: Any) -> list[Any]:
+            del args, kwargs
+            return []
+
+        async def get_published_digest_by_date(self, *args: Any, **kwargs: Any) -> Digest | None:
+            del args, kwargs
+            return None
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            return digest
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
+
+    class MockResult:
+        def all(self) -> list[Any]:
+            return []
+
+    class MockSession:
+        async def execute(self, _stmt: Any) -> Any:
+            return MockResult()
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    with caplog.at_level(logging.INFO):
+        report = await run_pipeline(
+            session_factory=cast(Any, mock_session_factory),
+            digest_date=date(2026, 9, 7),
+            window_start=now - timedelta(hours=24),
+            window_end=now,
+        )
+
+    assert report.processed_snapshot_count == 2
+    assert sentinel_marker not in caplog.text
+    err_records = [
+        r for r in caplog.records if r.levelname == "ERROR" and "comparison" in r.message
+    ]
+    assert len(err_records) == 1
+    assert getattr(err_records[0], "exception_type", None) == "RuntimeError"
+    assert err_records[0].exc_info is None
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_reuses_existing_published_digest_on_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a published digest already exists for the date, run_pipeline returns it without re-persisting."""
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    existing_id = new_id()
+    existing_digest = Digest(
+        id=existing_id,
+        digest_date=date(2026, 9, 7),
+        status=DigestStatus.PUBLISHED,
+        title="Existing Published Digest",
+        claims=[],
+    )
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.select_snapshots_in_window",
+        AsyncMock(return_value=[]),
+    )
+
+    persist_called = False
+
+    class MockStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def get_published_digest_by_date(self, digest_date: date) -> Digest | None:
+            if digest_date == date(2026, 9, 7):
+                return existing_digest
+            return None
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            nonlocal persist_called
+            persist_called = True
+            return digest
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
+
+    class MockResult:
+        def all(self) -> list[Any]:
+            return []
+
+    class MockSession:
+        async def execute(self, _stmt: Any) -> Any:
+            return MockResult()
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    report = await run_pipeline(
+        session_factory=cast(Any, mock_session_factory),
+        digest_date=date(2026, 9, 7),
+        window_start=now - timedelta(hours=24),
+        window_end=now,
+    )
+
+    assert report.digest_id == existing_id
+    assert report.status == "published"
+    assert report.published is True
+    assert report.digest_status == "published"
+    assert persist_called is False

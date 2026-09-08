@@ -438,10 +438,11 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
 
             processed_count += 1
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            LOGGER.exception(
+            LOGGER.error(
                 "intelligence item processing failed item_id=%s snapshot_id=%s",
                 item_row.id,
                 snapshot_row.id,
+                extra={"exception_type": type(exc).__name__},
             )
             failed_items.append(
                 {
@@ -476,8 +477,11 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
             for claim in comp_claims:
                 comparison_claim_ids.add(claim.id)
                 all_claims.append(claim)
-        except Exception:  # pylint: disable=broad-exception-caught
-            LOGGER.exception("cross-subject comparison failed in persistent runner")
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            LOGGER.error(
+                "cross-subject comparison failed in persistent runner",
+                extra={"exception_type": type(exc).__name__},
+            )
 
     digest = assemble_digest(
         digest_date=digest_date,
@@ -493,21 +497,25 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
     # Digest persistence and publication transaction
     async with session_factory() as session:
         store = PostgresFactStore(session)
-        digest_to_persist = (
-            digest.model_copy(update={"status": DigestStatus.DRAFT})
-            if digest.status == DigestStatus.PUBLISHED
-            else digest
-        )
-        persisted = await store.persist_digest(digest_to_persist)
-        if digest.status == DigestStatus.PUBLISHED:
-            final_digest = await store.publish_digest(
-                persisted.id,
-                known_snapshot_ids=known_snapshot_ids,
-                snapshot_resolver=snapshot_resolver,
-            )
+        existing_published = await store.get_published_digest_by_date(digest_date)
+        if existing_published is not None:
+            final_digest = existing_published
         else:
-            final_digest = persisted
-        await session.commit()
+            digest_to_persist = (
+                digest.model_copy(update={"status": DigestStatus.DRAFT})
+                if digest.status == DigestStatus.PUBLISHED
+                else digest
+            )
+            persisted = await store.persist_digest(digest_to_persist)
+            if digest.status == DigestStatus.PUBLISHED:
+                final_digest = await store.publish_digest(
+                    persisted.id,
+                    known_snapshot_ids=known_snapshot_ids,
+                    snapshot_resolver=snapshot_resolver,
+                )
+            else:
+                final_digest = persisted
+            await session.commit()
 
     completed_at = clock()
     status = (
