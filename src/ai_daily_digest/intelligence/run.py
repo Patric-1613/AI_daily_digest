@@ -203,17 +203,23 @@ def resolve_window(
     match_h = _HOURS_RE.match(since_str)
     if match_h:
         hours = int(match_h.group(1))
+        if hours <= 0:
+            raise ValueError(f"Lookback duration must be strictly positive (> 0), got: {since!r}")
         window_start = window_end - timedelta(hours=hours)
         return window_start, window_end
 
     match_d = _DAYS_RE.match(since_str)
     if match_d:
         days = int(match_d.group(1))
+        if days <= 0:
+            raise ValueError(f"Lookback duration must be strictly positive (> 0), got: {since!r}")
         window_start = window_end - timedelta(days=days)
         return window_start, window_end
 
     if since_str.isdigit():
         hours = int(since_str)
+        if hours <= 0:
+            raise ValueError(f"Lookback duration must be strictly positive (> 0), got: {since!r}")
         window_start = window_end - timedelta(hours=hours)
         return window_start, window_end
 
@@ -250,7 +256,9 @@ async def select_snapshots_in_window(
         )
         .order_by(DocumentSnapshotRow.fetched_at.asc(), DocumentSnapshotRow.id.asc())
     )
-    if limit is not None and limit > 0:
+    if limit is not None:
+        if limit <= 0:
+            raise ValueError(f"limit must be strictly positive (> 0), got: {limit}")
         stmt = stmt.limit(limit)
     res = await session.execute(stmt)
     return [(r[0], r[1]) for r in res.all()]
@@ -545,6 +553,17 @@ async def run_with_real_infrastructure(
         await engine.dispose()
 
 
+def _positive_int(value: str) -> int:
+    """Argparse type validator ensuring an integer is strictly positive (> 0)."""
+    try:
+        ival = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid integer value: {value!r}") from exc
+    if ival <= 0:
+        raise argparse.ArgumentTypeError(f"Limit must be strictly positive (> 0), got: {ival}")
+    return ival
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="generate-digest",
@@ -565,9 +584,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--limit",
-        type=int,
+        type=_positive_int,
         default=None,
-        help="Maximum snapshots to select and process",
+        help="Maximum snapshots to select and process (must be > 0)",
     )
     parser.add_argument(
         "--title",

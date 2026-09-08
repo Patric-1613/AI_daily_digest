@@ -23,6 +23,7 @@ from ai_daily_digest.intelligence.run import (
     render_report,
     resolve_window,
     run_pipeline,
+    select_snapshots_in_window,
     to_document_snapshot,
     to_source_item,
 )
@@ -186,9 +187,32 @@ def test_resolve_window_invalid_unit() -> None:
         resolve_window(target_date, since="invalid_since")
 
 
-def test_parse_args_invalid_limit() -> None:
-    with pytest.raises(SystemExit):
-        _parse_args(["--limit", "not_a_number"])
+@pytest.mark.parametrize("invalid_since", ["0h", "0d", "0"])
+def test_resolve_window_rejects_zero_or_negative_duration(invalid_since: str) -> None:
+    target_date = date(2026, 9, 7)
+    with pytest.raises(ValueError, match="Lookback duration must be strictly positive"):
+        resolve_window(target_date, since=invalid_since)
+
+
+@pytest.mark.parametrize("invalid_limit", ["0", "-1", "not_a_number"])
+def test_parse_args_invalid_limit(invalid_limit: str) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_args(["--limit", invalid_limit])
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.asyncio
+async def test_select_snapshots_in_window_rejects_non_positive_limit() -> None:
+    session = AsyncMock()
+    now = datetime(2026, 9, 7, 0, 0, 0, tzinfo=UTC)
+    with pytest.raises(ValueError, match="limit must be strictly positive"):
+        await select_snapshots_in_window(
+            session, window_start=now, window_end=now + timedelta(days=1), limit=0
+        )
+    with pytest.raises(ValueError, match="limit must be strictly positive"):
+        await select_snapshots_in_window(
+            session, window_start=now, window_end=now + timedelta(days=1), limit=-5
+        )
 
 
 def test_emit_failure(capsys: pytest.CaptureFixture[str]) -> None:
@@ -210,6 +234,15 @@ def test_main_invalid_digest_date(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_main_invalid_since(capsys: pytest.CaptureFixture[str]) -> None:
     code = main(["--since", "invalid-since-format"])
+    assert code == 2
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.out.strip())
+    assert parsed["status"] == "failed"
+    assert parsed["error"] == "ValueError"
+
+
+def test_main_rejects_zero_duration_since(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["--since", "0h"])
     assert code == 2
     captured = capsys.readouterr()
     parsed = json.loads(captured.out.strip())
