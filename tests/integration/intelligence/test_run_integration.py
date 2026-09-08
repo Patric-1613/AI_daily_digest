@@ -313,15 +313,15 @@ async def test_published_outcome_persists_as_draft_then_publishes(
         # Snapshot 1: Baseline observation establishing context_window_tokens = 64000
         await _create_item_and_snapshot(
             session,
-            title="OpenAI GPT-4o Baseline",
-            content_text="OpenAI introduces GPT-4o with 64000 context window.",
+            title="OpenAI PublishGateModel Baseline",
+            content_text="OpenAI introduces PublishGateModel with 64000 context window.",
             fetched_at=window_start + timedelta(hours=1),
         )
         # Snapshot 2: Update observation changing context_window_tokens to 128000
         await _create_item_and_snapshot(
             session,
-            title="OpenAI GPT-4o Launch",
-            content_text="OpenAI introduces GPT-4o with 128000 context window.",
+            title="OpenAI PublishGateModel Launch",
+            content_text="OpenAI introduces PublishGateModel with 128000 context window.",
             fetched_at=window_start + timedelta(hours=2),
         )
         await session.commit()

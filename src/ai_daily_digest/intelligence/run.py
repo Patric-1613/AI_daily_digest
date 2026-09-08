@@ -376,7 +376,6 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
     failed_items: list[dict[str, str]] = []
     unresolved_items: list[uuid.UUID] = []
     processed_count = 0
-    change_set_ids: dict[Subject, uuid.UUID] = {}
 
     for item_row, snapshot_row in candidates:
         item = to_source_item(item_row)
@@ -405,17 +404,13 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
             # Per-item transaction boundary (ADR 0002 §13)
             async with session_factory() as session:
                 store = PostgresFactStore(session)
-                existing_cs_id = change_set_ids.get(subject)
                 changes = await store.detect_and_persist_changes(
                     subject=subject,
                     facts=facts,
                     snapshot_observed_at=snapshot.fetched_at,
                     detected_at=batch_detected_at,
                     extraction_version=1,
-                    change_set_id=existing_cs_id,
                 )
-                if changes and existing_cs_id is None:
-                    change_set_ids[subject] = changes[0].change_set_id
                 await session.commit()
 
             for change in changes:
