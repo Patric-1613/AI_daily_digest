@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
@@ -66,8 +67,8 @@ async def test_window_selection_boundaries(
     database_session: AsyncSession,
 ) -> None:
     """Window selection correctly queries [window_start, window_end) including boundary cases."""
-    window_start = datetime(2026, 9, 7, 0, 0, 0, tzinfo=UTC)
-    window_end = datetime(2026, 9, 8, 0, 0, 0, tzinfo=UTC)
+    window_start = datetime(2026, 9, 1, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 2, 0, 0, 0, tzinfo=UTC)
 
     # 1. strictly before window_start: excluded
     await _create_item_and_snapshot(
@@ -114,9 +115,9 @@ async def test_idempotent_reprocessing(
     open_database_session: _OpenSession,
 ) -> None:
     """Reprocessing an already-seen snapshot in the window is a safe no-op."""
-    window_start = datetime(2026, 9, 7, 0, 0, 0, tzinfo=UTC)
-    window_end = datetime(2026, 9, 8, 0, 0, 0, tzinfo=UTC)
-    digest_date = date(2026, 9, 7)
+    window_start = datetime(2026, 9, 2, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 3, 0, 0, 0, tzinfo=UTC)
+    digest_date = date(2026, 9, 2)
 
     async with open_database_session() as session:
         _, snap_id = await _create_item_and_snapshot(
@@ -192,9 +193,9 @@ async def test_per_item_transaction_isolation(
     open_database_session: _OpenSession,
 ) -> None:
     """One item's failure does not roll back or abort other items in the batch."""
-    window_start = datetime(2026, 9, 7, 0, 0, 0, tzinfo=UTC)
-    window_end = datetime(2026, 9, 8, 0, 0, 0, tzinfo=UTC)
-    digest_date = date(2026, 9, 7)
+    window_start = datetime(2026, 9, 3, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 4, 0, 0, 0, tzinfo=UTC)
+    digest_date = date(2026, 9, 3)
 
     async with open_database_session() as session:
         # Item 1: Valid item that will succeed
@@ -263,29 +264,33 @@ async def test_cli_main_e2e_smoke(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """CLI entry point (main) wires PostgresFactStore and runs end-to-end against real database."""
-    today = datetime.now(UTC).date()
-    now = datetime.now(UTC)
+    target_date = date(2026, 9, 4)
+    target_time = datetime(2026, 9, 4, 12, 0, 0, tzinfo=UTC)
 
     async with open_database_session() as session:
         await _create_item_and_snapshot(
             session,
             title="OpenAI GPT-4o Launch",
             content_text="OpenAI introduces GPT-4o model.",
-            fetched_at=now,
+            fetched_at=target_time,
         )
         await session.commit()
 
     monkeypatch.setenv("DATABASE_URL", temporary_database_url)
 
-    # Run main CLI entrypoint
-    exit_code = main(["--digest-date", today.isoformat(), "--since", "24h"])
+    # Run main CLI entrypoint via to_thread since main() invokes asyncio.run()
+    exit_code = await asyncio.to_thread(
+        main, ["--digest-date", target_date.isoformat(), "--since", "24h"]
+    )
 
     # Returns 0 (published) or 1 (draft/review with 0 changes)
     assert exit_code in (0, 1)
 
     # Verify a digest was persisted in the real PostgreSQL database
     async with open_database_session() as session:
-        res = await session.execute(select(DigestModel).where(DigestModel.digest_date == today))
+        res = await session.execute(
+            select(DigestModel).where(DigestModel.digest_date == target_date)
+        )
         digests = list(res.scalars().all())
         assert len(digests) >= 1
 
@@ -300,9 +305,9 @@ async def test_published_outcome_persists_as_draft_then_publishes(
     be directly persisted with status='published' via persist_digest(); the runner
     persists as draft first and transitions via publish_digest().
     """
-    window_start = datetime(2026, 9, 7, 0, 0, 0, tzinfo=UTC)
-    window_end = datetime(2026, 9, 8, 0, 0, 0, tzinfo=UTC)
-    digest_date = date(2026, 9, 7)
+    window_start = datetime(2026, 9, 5, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 6, 0, 0, 0, tzinfo=UTC)
+    digest_date = date(2026, 9, 5)
 
     async with open_database_session() as session:
         _, _snap_id = await _create_item_and_snapshot(
