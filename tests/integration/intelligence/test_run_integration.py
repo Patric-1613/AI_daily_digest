@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
 from ai_daily_digest.intelligence.db.models import DigestModel, ExtractedFactModel
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
-from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
 from ai_daily_digest.intelligence.run import (
     main,
     run_pipeline,
@@ -311,39 +310,31 @@ async def test_published_outcome_persists_as_draft_then_publishes(
     digest_date = date(2026, 9, 5)
 
     async with open_database_session() as session:
-        # Snapshot 1: Baseline observation establishing context_window_tokens = 64000
+        # Snapshot 1: Baseline observation establishing max_output_tokens = 4096
         await _create_item_and_snapshot(
             session,
-            title="OpenAI PublishGateModel Baseline",
-            content_text="OpenAI introduces PublishGateModel with 64000 context window.",
+            title="OpenAI GPT-4o Baseline",
+            content_text="OpenAI introduces GPT-4o with 4096 output tokens.",
             fetched_at=window_start + timedelta(hours=1),
         )
-        # Snapshot 2: Update observation changing context_window_tokens to 128000
+        # Snapshot 2: Update observation changing max_output_tokens to 16384
         await _create_item_and_snapshot(
             session,
-            title="OpenAI PublishGateModel Launch",
-            content_text="OpenAI introduces PublishGateModel with 128000 context window.",
+            title="OpenAI GPT-4o Launch",
+            content_text="OpenAI introduces GPT-4o with 16384 output tokens.",
             fetched_at=window_start + timedelta(hours=2),
         )
         await session.commit()
 
-    def mock_resolve(system: str, prompt: str) -> ResolveLLMResponse:
-        del system, prompt
-        return ResolveLLMResponse(
-            company="OpenAI",
-            product="PublishGateModel",
-            confidence=0.95,
-        )
-
     def mock_extract(system: str, prompt: str) -> FactExtractionResponse:
         del system
-        val = "128000" if "128000" in prompt else "64000"
+        val = "16384" if "16384" in prompt else "4096"
         return FactExtractionResponse(
             facts=[
                 FactCandidate(
-                    field="context_window_tokens",
+                    field="max_output_tokens",
                     value=val,
-                    quoted_span=f"{val} context window",
+                    quoted_span=f"{val} output tokens",
                     confidence=0.95,
                 )
             ]
@@ -354,7 +345,6 @@ async def test_published_outcome_persists_as_draft_then_publishes(
         digest_date=digest_date,
         window_start=window_start,
         window_end=window_end,
-        resolve_llm_call_fn=mock_resolve,
         extract_call_fn=mock_extract,
     )
 
