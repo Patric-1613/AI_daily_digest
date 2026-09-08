@@ -1,6 +1,7 @@
 # 0012 — Subscription confirmation and unsubscribe token security
 
-Status: Proposed (authored by Person C; review required from Persons A and B)
+Status: Accepted by Person A (Patric, 2026-09-04), Person B (Sujin, 2026-09-04), and Person C
+(author) via PR #51
 Date: 2026-09-04
 Issue: [#50](https://github.com/Patric-1613/Virtusa_CaPStone/issues/50)
 
@@ -372,10 +373,10 @@ This ADR PR changes only this file. After approval:
 
 ## Acceptance checklist
 
-- [ ] Person A confirms the future schema/transaction plan fits the shared PostgreSQL and migration
+- [x] Person A confirms the future schema/transaction plan fits the shared PostgreSQL and migration
       boundaries without storing raw tokens.
-- [ ] Person B confirms subscription actions cannot be triggered by model output or untrusted
+- [x] Person B confirms subscription actions cannot be triggered by model output or untrusted
       collected content and that email content remains outside intelligence evidence.
-- [ ] Person C confirms API/OpenAPI, browser, provider-adapter, logging, deployment, and RFC 8058
+- [x] Person C confirms API/OpenAPI, browser, provider-adapter, logging, deployment, and RFC 8058
       behavior is implementable within Delivery.
-- [ ] ADR remains `Proposed` until the required peer reviews are recorded.
+- [x] Required peer approvals are recorded in PR #51 before changing the ADR status to `Accepted`.
