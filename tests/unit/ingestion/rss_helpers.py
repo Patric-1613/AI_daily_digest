@@ -3,6 +3,7 @@ network, no database, no wall clock."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -81,6 +82,76 @@ class FakeFetcher:
         if isinstance(outcome, TransportError):
             raise outcome
         return outcome
+
+
+class MappingFetcher:
+    """An `HttpFetcher` that returns a per-URL scripted outcome -- for
+    multi-source tests where each source fetches a different feed URL.
+
+    `outcomes` maps a request URL to either an `HttpResponse` (returned)
+    or a `TransportError` (raised). An unmapped URL raises
+    `AssertionError` -- a test-wiring bug, never a silent live request.
+    """
+
+    def __init__(self, outcomes: Mapping[str, HttpResponse | TransportError]) -> None:
+        self._outcomes = dict(outcomes)
+        self.received_urls: list[str] = []
+        self.received_allowed_hosts: list[frozenset[str]] = []
+
+    @property
+    def call_count(self) -> int:
+        return len(self.received_urls)
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+        max_response_bytes: int,
+        allowed_hosts: frozenset[str],
+    ) -> HttpResponse:
+        self.received_urls.append(url)
+        self.received_allowed_hosts.append(allowed_hosts)
+        if url not in self._outcomes:
+            raise AssertionError(f"MappingFetcher received an unmapped URL: {url!r}")
+        outcome = self._outcomes[url]
+        if isinstance(outcome, TransportError):
+            raise outcome
+        return outcome
+
+
+class ConcurrencyProbeFetcher:
+    """An `HttpFetcher` that records how many `fetch` calls are in flight
+    at once, so a test can assert a batch runner never exceeds its
+    concurrency bound. Every call yields control a few times before
+    returning, giving other already-scheduled tasks the chance to enter
+    `fetch` concurrently."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+        self._in_flight = 0
+        self.max_in_flight = 0
+        self.received_urls: list[str] = []
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+        max_response_bytes: int,
+        allowed_hosts: frozenset[str],
+    ) -> HttpResponse:
+        self.received_urls.append(url)
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            for _ in range(4):
+                await asyncio.sleep(0)
+        finally:
+            self._in_flight -= 1
+        return HttpResponse(status_code=200, body=self._body)
 
 
 class RecordingSleep:

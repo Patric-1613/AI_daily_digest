@@ -125,6 +125,15 @@ collect-rss = "ai_daily_digest.ingestion.rss.run:main"
 # Compatibility alias for the command PR #71 shipped -- equivalent to
 # `collect-rss --source-id openai_news`.
 collect-openai-rss = "ai_daily_digest.ingestion.rss.run:main_openai_news"
+# Scheduler-friendly batch runner (src/ai_daily_digest/ingestion/rss/batch.py).
+# `collect-rss-batch` collects the verified production RSS sources
+# (openai_news, langchain_pypi, langgraph_pypi) in one bounded-concurrency
+# pass, or exactly the --source-id values given. Reuses the single-source
+# retry/normalization/dedup/persistence path unchanged, isolates failures
+# per source, and prints one structured JSON batch report. Exit 0 = every
+# selected source ok, 1 = partial, 2 = config/selection failure or total
+# failure. Safe for a cloud-cron worker; not a --due scheduler.
+collect-rss-batch = "ai_daily_digest.ingestion.rss.batch:main"
 
 [dependency-groups]
 dev = [
