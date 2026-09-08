@@ -134,6 +134,8 @@ collect-openai-rss = "ai_daily_digest.ingestion.rss.run:main_openai_news"
 # selected source ok, 1 = partial, 2 = config/selection failure or total
 # failure. Safe for a cloud-cron worker; not a --due scheduler.
 collect-rss-batch = "ai_daily_digest.ingestion.rss.batch:main"
+# Intelligence production command for one daily digest generation run
+generate-digest = "ai_daily_digest.intelligence.run:main"
 
 [dependency-groups]
 dev = [
