@@ -21,6 +21,10 @@ from ai_daily_digest.intelligence.db.models import (
     ExtractedFactModel,
 )
 from ai_daily_digest.intelligence.db.repository import PostgresFactStore
+from ai_daily_digest.intelligence.evaluate import (
+    DigestRunEvaluation,
+    evaluate_digest_run,
+)
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.run import (
     main,
@@ -988,3 +992,93 @@ async def test_rerun_with_new_material_routes_to_review_without_discarding_new_c
         # New review digest preserving the new material
         assert digests[1].id == report2.digest_id
         assert digests[1].status == "review"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_digest_run_integration(
+    open_database_session: _OpenSession,
+) -> None:
+    """evaluate_digest_run scores a pipeline-produced digest using real database snapshots."""
+    window_start = datetime(2026, 9, 20, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 21, 0, 0, 0, tzinfo=UTC)
+    digest_date = date(2026, 9, 20)
+
+    # 1. Seed snapshot 1 (initial baseline)
+    async with open_database_session() as session:
+        _, _snap1_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Initial",
+            content_text="OpenAI introduces GPT-4o with 128000 context window.",
+            fetched_at=window_start - timedelta(days=1),
+        )
+        await session.commit()
+
+    # 2. Seed snapshot 2 (in window, triggering a change)
+    async with open_database_session() as session:
+        _, _snap2_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Update",
+            content_text="OpenAI updates GPT-4o with 256000 context window.",
+            fetched_at=window_start + timedelta(hours=3),
+        )
+        await session.commit()
+
+    def dynamic_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system
+        if "256000" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="context_window_tokens",
+                        value="256000",
+                        quoted_span="256000 context window",
+                        confidence=0.95,
+                    )
+                ]
+            )
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="128000",
+                    quoted_span="128000 context window",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    # 3. Seed baseline fact prior to target window
+    report_base = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=date(2026, 9, 19),
+        window_start=window_start - timedelta(days=2),
+        window_end=window_start - timedelta(days=1) + timedelta(minutes=1),
+        extract_call_fn=dynamic_extract,
+    )
+    assert report_base.selected_snapshot_count == 1
+
+    # 4. Run pipeline producing a digest with a change claim
+    report = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=digest_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=dynamic_extract,
+    )
+
+    assert report.status == "published"
+    assert report.published is True
+    assert report.digest_id is not None
+    assert report.claim_count >= 1
+
+    # 5. Evaluate the persisted digest using evaluate_digest_run
+    async with open_database_session() as session:
+        eval_result: DigestRunEvaluation = await evaluate_digest_run(report.digest_id, session)
+        # All claims cite real snapshots and numbers are grounded
+        assert eval_result.citation_validity == 1.0
+        assert eval_result.unsupported_claim_count == 0
+        assert eval_result.duplicate_rate == 0.0
+
+        # Assert not found raises ValueError
+        with pytest.raises(ValueError, match="not found"):
+            await evaluate_digest_run(new_id(), session)

@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow
+from ai_daily_digest.intelligence.db.repository import PostgresFactStore
 from ai_daily_digest.intelligence.loaders import FixtureLoader, find_repo_root
+from ai_daily_digest.intelligence.run import to_document_snapshot
 from ai_daily_digest.intelligence.validate import validate_claim
 from ai_daily_digest.shared.schemas import Change, ClaimValidationStatus, Digest
 from ai_daily_digest.shared.snapshot_resolver import InMemorySnapshotResolver, SnapshotResolver
@@ -156,6 +162,71 @@ def run_eval(
         ),
         duplicate_rate=duplicate_rate(digest),
         change_recall=change_recall(detected_changes, expected_changes),
+    )
+
+
+@dataclass(frozen=True)
+class DigestRunEvaluation:
+    """Non-gold-reference evaluation metrics scored on a pipeline-produced digest."""
+
+    citation_validity: float
+    unsupported_claim_count: int
+    duplicate_rate: float
+
+
+async def evaluate_digest_run(
+    digest_id: uuid.UUID,
+    session: AsyncSession,
+) -> DigestRunEvaluation:
+    """Score a persisted digest using non-gold-reference evaluation metrics.
+
+    Evaluates citation_validity, unsupported_claim_count, and duplicate_rate
+    against real stored snapshots. Does not compute change_recall since no
+    gold reference changes exist for arbitrary pipeline runs.
+
+    Args:
+        digest_id: Unique ID of the persisted digest.
+        session: Active asynchronous SQLAlchemy session.
+
+    Returns:
+        DigestRunEvaluation containing citation_validity, unsupported_claim_count,
+        and duplicate_rate.
+
+    Raises:
+        ValueError: If the digest with the given digest_id is not found.
+    """
+    store = PostgresFactStore(session)
+    digest = await store.get_digest_by_id(digest_id)
+    if digest is None:
+        raise ValueError(f"Digest with id {digest_id} not found.")
+
+    cited_snapshot_ids: set[uuid.UUID] = {
+        sid for claim in digest.claims for sid in claim.citation_snapshot_ids
+    }
+
+    resolver = InMemorySnapshotResolver()
+    known_snapshot_ids: set[uuid.UUID] = set()
+
+    if cited_snapshot_ids:
+        stmt = select(DocumentSnapshotRow).where(DocumentSnapshotRow.id.in_(cited_snapshot_ids))
+        res = await session.execute(stmt)
+        for row in res.scalars().all():
+            snap = to_document_snapshot(row)
+            resolver.add(snap)
+            known_snapshot_ids.add(snap.id)
+
+    return DigestRunEvaluation(
+        citation_validity=citation_validity(
+            digest,
+            known_snapshot_ids,
+            snapshot_resolver=resolver,
+        ),
+        unsupported_claim_count=unsupported_claim_count(
+            digest,
+            known_snapshot_ids,
+            snapshot_resolver=resolver,
+        ),
+        duplicate_rate=duplicate_rate(digest),
     )
 
 
