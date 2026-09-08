@@ -14,9 +14,10 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_daily_digest.delivery.api.pagination import CursorCodec
-from ai_daily_digest.shared.repositories import SourceItemFeedRepository
+from ai_daily_digest.shared.repositories import DigestFeedRepository, SourceItemFeedRepository
 
 type SourceItemFeedRepositoryFactory = Callable[[AsyncSession], SourceItemFeedRepository]
+type DigestFeedRepositoryFactory = Callable[[AsyncSession], DigestFeedRepository]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -143,5 +144,26 @@ async def get_source_item_feed_repository(
     )
     if session_factory is None or repository_factory is None:
         raise RuntimeError("SourceItemFeedRepository is not configured on the application state")
+    async with session_factory() as session:
+        yield repository_factory(session)
+
+
+async def get_digest_feed_repository(request: Request) -> AsyncIterator[DigestFeedRepository]:
+    """Yield a fixed test repository or one request-scoped digest adapter."""
+    repo = getattr(request.app.state, "digest_feed_repository", None)
+    if repo is not None:
+        yield cast(DigestFeedRepository, repo)
+        return
+
+    session_factory = cast(
+        async_sessionmaker[AsyncSession] | None,
+        getattr(request.app.state, "database_session_factory", None),
+    )
+    repository_factory = cast(
+        DigestFeedRepositoryFactory | None,
+        getattr(request.app.state, "digest_feed_repository_factory", None),
+    )
+    if session_factory is None or repository_factory is None:
+        raise RuntimeError("DigestFeedRepository is not configured on the application state")
     async with session_factory() as session:
         yield repository_factory(session)

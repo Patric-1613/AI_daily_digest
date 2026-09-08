@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ai_daily_digest.delivery.api.app import API_TITLE, API_VERSION, create_app
-from ai_daily_digest.shared.repositories import SourceItemFeedRepository
+from ai_daily_digest.shared.repositories import DigestFeedRepository, SourceItemFeedRepository
 
 pytestmark = pytest.mark.contract
 
@@ -28,6 +28,7 @@ def _full_app() -> Any:
     """
     return create_app(
         source_item_feed_repository=AsyncMock(spec=SourceItemFeedRepository),
+        digest_feed_repository=AsyncMock(spec=DigestFeedRepository),
         cursor_signing_key=_TEST_KEY,
     )
 
@@ -64,17 +65,28 @@ def test_openapi_metadata_is_explicit_safe_and_openapi_3_1() -> None:
 def test_only_implemented_paths_appear_in_openapi() -> None:
     schema = _full_app().openapi()
 
-    assert set(schema["paths"]) == {"/v1/health/live", "/v1/health/ready", "/v1/updates"}
+    assert set(schema["paths"]) == {
+        "/v1/health/live",
+        "/v1/health/ready",
+        "/v1/updates",
+        "/v1/digests",
+    }
     assert set(schema["paths"]["/v1/health/live"]) == {"get"}
     assert set(schema["paths"]["/v1/health/ready"]) == {"get"}
     assert set(schema["paths"]["/v1/updates"]) == {"get"}
+    assert set(schema["paths"]["/v1/digests"]) == {"get"}
 
 
 def test_operation_ids_are_explicit_unique_and_stable_snake_case() -> None:
     operations = _operations(_full_app().openapi())
     operation_ids = [operation["operationId"] for operation in operations]
 
-    assert set(operation_ids) == {"get_health_live", "get_health_ready", "get_updates"}
+    assert set(operation_ids) == {
+        "get_health_live",
+        "get_health_ready",
+        "get_updates",
+        "get_digests",
+    }
     assert len(operation_ids) == len(set(operation_ids))
     assert all(re.fullmatch(r"[a-z][a-z0-9_]*", operation_id) for operation_id in operation_ids)
 
@@ -86,8 +98,11 @@ def test_schema_component_names_and_responses_are_stable() -> None:
     assert component_names == {
         "ErrorBody",
         "ErrorEnvelope",
+        "DigestStatus",
+        "DigestSummary",
         "LiveResponse",
         "Page_UpdateSummary_",
+        "Page_DigestSummary_",
         "ReadinessCheckResponse",
         "ReadyResponse",
         "UpdateSummary",
@@ -110,6 +125,16 @@ def test_schema_component_names_and_responses_are_stable() -> None:
     assert updates_responses["422"]["content"]["application/json"]["schema"]["$ref"].endswith(
         "/ErrorEnvelope"
     )
+    digest_responses = schema["paths"]["/v1/digests"]["get"]["responses"]
+    assert digest_responses["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/Page_DigestSummary_"
+    )
+    assert digest_responses["400"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ErrorEnvelope"
+    )
+    assert digest_responses["422"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ErrorEnvelope"
+    )
 
 
 def test_interactive_docs_flag_does_not_change_executable_openapi() -> None:
@@ -117,6 +142,7 @@ def test_interactive_docs_flag_does_not_change_executable_openapi() -> None:
         _full_app().openapi()
         == create_app(
             source_item_feed_repository=AsyncMock(spec=SourceItemFeedRepository),
+            digest_feed_repository=AsyncMock(spec=DigestFeedRepository),
             cursor_signing_key=_TEST_KEY,
             docs_enabled=False,
         ).openapi()

@@ -11,6 +11,7 @@ from ai_daily_digest.delivery.api.app import create_app
 from ai_daily_digest.delivery.api.config import DeliverySettings
 from ai_daily_digest.delivery.api.readiness import DatabaseReadinessProbe
 from ai_daily_digest.ingestion.db.repository import PostgresSourceItemRepository
+from ai_daily_digest.intelligence.db.repository import PostgresDigestFeedRepository
 from ai_daily_digest.shared.config import DatabaseConfig
 from ai_daily_digest.shared.db.engine import build_engine, build_session_factory
 
@@ -42,5 +43,6 @@ def create_production_app() -> FastAPI:
         database_readiness_probe=database_probe,
         database_session_factory=session_factory,
         source_item_feed_repository_factory=PostgresSourceItemRepository,
+        digest_feed_repository_factory=PostgresDigestFeedRepository,
         lifespan=lifespan,
     )

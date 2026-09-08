@@ -401,7 +401,7 @@ def test_database_repository_is_built_with_one_short_lived_session_per_request()
 def test_create_app_rejects_incomplete_or_unsafe_scoped_repository_wiring() -> None:
     sessions = cast(async_sessionmaker[AsyncSession], _TrackedSessionFactory())
 
-    with pytest.raises(ValueError, match="must be configured together"):
+    with pytest.raises(ValueError, match="must be configured"):
         create_app(database_session_factory=sessions)
 
     with pytest.raises(ValueError, match="readiness probe is required"):
