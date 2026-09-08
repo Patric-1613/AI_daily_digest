@@ -310,31 +310,31 @@ async def test_published_outcome_persists_as_draft_then_publishes(
     digest_date = date(2026, 9, 5)
 
     async with open_database_session() as session:
-        # Snapshot 1: Baseline observation establishing max_output_tokens = 4096
+        # Snapshot 1: Baseline observation establishing output_price_usd = 15
         await _create_item_and_snapshot(
             session,
             title="OpenAI GPT-4o Baseline",
-            content_text="OpenAI introduces GPT-4o with 4096 output tokens.",
+            content_text="OpenAI sets GPT-4o output price at 15 dollars per million tokens.",
             fetched_at=window_start + timedelta(hours=1),
         )
-        # Snapshot 2: Update observation changing max_output_tokens to 16384
+        # Snapshot 2: Update observation changing output_price_usd to 30
         await _create_item_and_snapshot(
             session,
             title="OpenAI GPT-4o Launch",
-            content_text="OpenAI introduces GPT-4o with 16384 output tokens.",
+            content_text="OpenAI sets GPT-4o output price at 30 dollars per million tokens.",
             fetched_at=window_start + timedelta(hours=2),
         )
         await session.commit()
 
     def mock_extract(system: str, prompt: str) -> FactExtractionResponse:
         del system
-        val = "16384" if "16384" in prompt else "4096"
+        val = "30" if "30" in prompt else "15"
         return FactExtractionResponse(
             facts=[
                 FactCandidate(
-                    field="max_output_tokens",
+                    field="output_price_usd",
                     value=val,
-                    quoted_span=f"{val} output tokens",
+                    quoted_span=f"{val} dollars",
                     confidence=0.95,
                 )
             ]
