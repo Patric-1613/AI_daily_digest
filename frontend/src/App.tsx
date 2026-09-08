@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { DigestFeed } from "./DigestFeed";
+import { DigestsApiError, fetchDigestsPage, mergeDigests } from "./api/digests";
+import type { DigestSummary } from "./api/digests";
 import { fetchUpdatesPage, mergeUpdates, UpdatesApiError } from "./api/updates";
 import type { UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
@@ -15,6 +18,13 @@ const models = [
 ];
 
 export default function App() {
+  const [digests, setDigests] = useState<DigestSummary[]>([]);
+  const [digestNextCursor, setDigestNextCursor] = useState<string | null>(null);
+  const [digestsInitialLoading, setDigestsInitialLoading] = useState(true);
+  const [digestsLoadingMore, setDigestsLoadingMore] = useState(false);
+  const [digestsError, setDigestsError] = useState<string | null>(null);
+  const [digestRequestVersion, setDigestRequestVersion] = useState(0);
+  const digestLoadMoreController = useRef<AbortController | null>(null);
   const [updates, setUpdates] = useState<UpdateSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -28,6 +38,38 @@ export default function App() {
     setError(null);
     setInitialRequestVersion((version) => version + 1);
   }, []);
+
+  const retryInitialDigests = useCallback(() => {
+    setDigestsInitialLoading(true);
+    setDigestsError(null);
+    setDigestRequestVersion((version) => version + 1);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchDigestsPage({
+      apiBaseUrl: publicConfig.apiBaseUrl,
+      signal: controller.signal,
+    }).then((page) => {
+      if (controller.signal.aborted) return;
+      setDigests(page.items);
+      setDigestNextCursor(page.next_cursor);
+      setDigestsError(null);
+    }).catch((loadError: unknown) => {
+      if (controller.signal.aborted) return;
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      const message = loadError instanceof DigestsApiError
+        ? loadError.message
+        : "The digest service could not be reached.";
+      setDigestsError(message);
+    }).finally(() => {
+      if (!controller.signal.aborted) setDigestsInitialLoading(false);
+    });
+    return () => {
+      controller.abort();
+      digestLoadMoreController.current?.abort();
+    };
+  }, [digestRequestVersion]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -83,6 +125,34 @@ export default function App() {
     }
   }, [loadingMore, nextCursor]);
 
+  const loadMoreDigests = useCallback(async () => {
+    if (!digestNextCursor || digestsLoadingMore) return;
+    digestLoadMoreController.current?.abort();
+    const controller = new AbortController();
+    digestLoadMoreController.current = controller;
+    setDigestsLoadingMore(true);
+    setDigestsError(null);
+    try {
+      const page = await fetchDigestsPage({
+        apiBaseUrl: publicConfig.apiBaseUrl,
+        cursor: digestNextCursor,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setDigests((current) => mergeDigests(current, page.items));
+      setDigestNextCursor(page.next_cursor);
+    } catch (loadError) {
+      if (controller.signal.aborted) return;
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      const message = loadError instanceof DigestsApiError
+        ? loadError.message
+        : "The digest service could not be reached.";
+      setDigestsError(message);
+    } finally {
+      if (!controller.signal.aborted) setDigestsLoadingMore(false);
+    }
+  }, [digestNextCursor, digestsLoadingMore]);
+
   return (
     <main>
       <header className="siteHeader">
@@ -109,7 +179,7 @@ export default function App() {
           <h1 id="digest-heading">The signal in AI,<span> without the noise.</span></h1>
           <p className="heroCopy">A concise, source-aware digest of the research, policy and products shaping artificial intelligence today.</p>
           <div className="heroMeta" aria-label="Digest statistics">
-            <span>{updates.length} updates loaded</span><span>Official sources</span><span>Cursor-paginated</span>
+            <span>{digests.length} digests loaded</span><span>{updates.length} updates loaded</span><span>Official sources</span><span>Cursor-paginated</span>
           </div>
         </section>
 
@@ -135,15 +205,26 @@ export default function App() {
         </section>
 
         <div className="contentGrid">
-          <UpdatesFeed
-            updates={updates}
-            initialLoading={initialLoading}
-            loadingMore={loadingMore}
-            error={error}
-            nextCursor={nextCursor}
-            onRetry={() => void retryInitialUpdates()}
-            onLoadMore={() => void loadMoreUpdates()}
-          />
+          <div className="feedsColumn">
+            <DigestFeed
+              digests={digests}
+              initialLoading={digestsInitialLoading}
+              loadingMore={digestsLoadingMore}
+              error={digestsError}
+              nextCursor={digestNextCursor}
+              onRetry={() => void retryInitialDigests()}
+              onLoadMore={() => void loadMoreDigests()}
+            />
+            <UpdatesFeed
+              updates={updates}
+              initialLoading={initialLoading}
+              loadingMore={loadingMore}
+              error={error}
+              nextCursor={nextCursor}
+              onRetry={() => void retryInitialUpdates()}
+              onLoadMore={() => void loadMoreUpdates()}
+            />
+          </div>
 
           <aside className="chatCard" aria-labelledby="chat-heading">
             <span className="statusDot" aria-hidden="true" /><p className="sectionLabel">Illustrative assistant preview · not API-backed</p><h2 id="chat-heading">Ask about today&apos;s digest.</h2>

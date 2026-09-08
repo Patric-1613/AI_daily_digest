@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import type { DigestSummary, FetchDigests } from "./api/digests";
 import type { FetchUpdates, UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
 
@@ -29,7 +30,21 @@ const secondUpdate: UpdateSummary = {
   canonical_url: "https://openai.com/news/second",
 };
 
+const firstDigest: DigestSummary = {
+  id: "01a034ed-e100-7e73-ab06-1fecafdc495c",
+  digest_date: "2026-09-07",
+  status: "published",
+  title: "AI Daily Digest — 7 September 2026",
+};
+
 function jsonResponse(items: UpdateSummary[], nextCursor: string | null): Response {
+  return new Response(JSON.stringify({ items, next_cursor: nextCursor }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function digestJsonResponse(items: DigestSummary[], nextCursor: string | null): Response {
   return new Response(JSON.stringify({ items, next_cursor: nextCursor }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -66,10 +81,12 @@ describe("AI Daily Digest shell", () => {
 
     expect(html).toContain("The signal in AI");
     expect(html).toContain("Source-backed AI industry monitoring");
+    expect(html).toContain("0 digests loaded");
     expect(html).toContain("0 updates loaded");
     expect(html).toContain("Illustrative model explorer");
     expect(html).toContain("Ask about today");
     expect(html).toContain("Illustrative trust metrics");
+    expect(html).toContain("Loading published digests");
     expect(html).toContain("Loading source updates");
   });
 
@@ -81,13 +98,15 @@ describe("AI Daily Digest shell", () => {
   );
 
   it("runs initial failure, abort-aware retry, and cursor load more through the mounted App", async () => {
-    const responses = [
+    const updateResponses = [
       new Response(null, { status: 503 }),
       jsonResponse([firstUpdate], "opaque-cursor"),
       jsonResponse([secondUpdate], null),
     ];
-    const fetchMock: FetchUpdates = vi.fn(async () => {
-      const response = responses.shift();
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([firstDigest], null);
+      const response = updateResponses.shift();
       if (!response) throw new Error("Unexpected extra fetch");
       return response;
     });
@@ -99,7 +118,10 @@ describe("AI Daily Digest shell", () => {
     await act(async () => root.render(<App />));
 
     await waitForText(container, "Updates are temporarily unavailable");
-    const initialSignal = vi.mocked(fetchMock).mock.calls[0]?.[1]?.signal;
+    const initialUpdateCall = vi.mocked(fetchMock).mock.calls.find(([input]) => (
+      new URL(String(input)).pathname === "/v1/updates"
+    ));
+    const initialSignal = initialUpdateCall?.[1]?.signal;
 
     await act(async () => buttonWithText(container, "Try again").click());
     await waitForText(container, "First source update");
@@ -108,20 +130,27 @@ describe("AI Daily Digest shell", () => {
     await act(async () => buttonWithText(container, "Load more updates").click());
     await waitForText(container, "Second source update");
 
+    expect(container.textContent).toContain("AI Daily Digest — 7 September 2026");
     expect(container.querySelectorAll("article.articleCard")).toHaveLength(2);
-    expect(vi.mocked(fetchMock)).toHaveBeenCalledTimes(3);
-    const loadMoreUrl = new URL(String(vi.mocked(fetchMock).mock.calls[2]?.[0]));
+    const updateCalls = vi.mocked(fetchMock).mock.calls.filter(([input]) => (
+      new URL(String(input)).pathname === "/v1/updates"
+    ));
+    expect(updateCalls).toHaveLength(3);
+    const loadMoreUrl = new URL(String(updateCalls[2]?.[0]));
     expect(loadMoreUrl.searchParams.get("cursor")).toBe("opaque-cursor");
 
     await act(async () => root.unmount());
   });
 
   it("aborts an outstanding retry when the App unmounts", async () => {
-    let callCount = 0;
+    let updateCallCount = 0;
     const observedSignals: AbortSignal[] = [];
-    const fetchMock: FetchUpdates = vi.fn(async (_input, init) => {
-      callCount += 1;
-      if (callCount === 1) {
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input, init) => {
+      if (new URL(String(input)).pathname === "/v1/digests") {
+        return digestJsonResponse([], null);
+      }
+      updateCallCount += 1;
+      if (updateCallCount === 1) {
         return new Response(null, { status: 503 });
       }
       if (init?.signal) observedSignals.push(init.signal);
