@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
 from ai_daily_digest.intelligence.assemble_digest import assemble_digest
+from ai_daily_digest.intelligence.change_sets import get_or_create_change_set_id
 from ai_daily_digest.intelligence.compare_subjects import (
     ComparisonResponse,
     FactRow,
@@ -376,6 +377,7 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
     failed_items: list[dict[str, str]] = []
     unresolved_items: list[uuid.UUID] = []
     processed_count = 0
+    change_set_ids: dict[Subject, uuid.UUID] = {}
 
     for item_row, snapshot_row in candidates:
         item = to_source_item(item_row)
@@ -404,12 +406,14 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
             # Per-item transaction boundary (ADR 0002 §13)
             async with session_factory() as session:
                 store = PostgresFactStore(session)
+                cs_id = get_or_create_change_set_id(change_set_ids, subject)
                 changes = await store.detect_and_persist_changes(
                     subject=subject,
                     facts=facts,
                     snapshot_observed_at=snapshot.fetched_at,
                     detected_at=batch_detected_at,
                     extraction_version=1,
+                    change_set_id=cs_id,
                 )
                 await session.commit()
 

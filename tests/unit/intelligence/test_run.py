@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -26,7 +27,7 @@ from ai_daily_digest.intelligence.run import (
     to_source_item,
 )
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import Digest, DigestClaim, DigestStatus
+from ai_daily_digest.shared.schemas import Digest, DigestClaim, DigestStatus, Subject
 
 
 def test_resolve_window_defaults() -> None:
@@ -359,3 +360,138 @@ async def test_run_pipeline_persists_as_draft_under_pr84_guard(
     assert published_calls == [assembled_id]
     assert report.published is True
     assert report.status == "published"
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_reuses_change_set_id_for_same_subject(  # pylint: disable=too-many-locals
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Snapshots for the same subject in one run must reuse the same change_set_id (ADR 0007)."""
+    now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
+    subj_a = Subject(company="Anthropic", product="Claude 3.5")
+    subj_b = Subject(company="Google", product="Gemini 1.5")
+
+    item1 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k1",
+        source_id="s1",
+        publisher="Anthropic",
+        title="Claude update 1",
+        canonical_url="https://example.com/1",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap1 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item1.id,
+        content_hash="h1",
+        fetched_at=now,
+        content_text="Claude text 1",
+    )
+    item2 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k2",
+        source_id="s1",
+        publisher="Anthropic",
+        title="Claude update 2",
+        canonical_url="https://example.com/2",
+        first_fetched_at=now + timedelta(minutes=5),
+        language="en",
+    )
+    snap2 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item2.id,
+        content_hash="h2",
+        fetched_at=now + timedelta(minutes=5),
+        content_text="Claude text 2",
+    )
+    item3 = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k3",
+        source_id="s2",
+        publisher="Google",
+        title="Gemini update",
+        canonical_url="https://example.com/3",
+        first_fetched_at=now + timedelta(minutes=10),
+        language="en",
+    )
+    snap3 = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item3.id,
+        content_hash="h3",
+        fetched_at=now + timedelta(minutes=10),
+        content_text="Gemini text",
+    )
+
+    candidates = [(item1, snap1), (item2, snap2), (item3, snap3)]
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.select_snapshots_in_window",
+        AsyncMock(return_value=candidates),
+    )
+
+    async def _mock_resolve_and_extract(
+        item: Any, *args: Any, **kwargs: Any
+    ) -> tuple[Subject | None, list[Any]]:
+        del args, kwargs
+        if item.publisher == "Anthropic":
+            return subj_a, []
+        return subj_b, []
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._resolve_and_extract_item",
+        _mock_resolve_and_extract,
+    )
+
+    recorded_change_set_ids: list[tuple[Subject, uuid.UUID]] = []
+
+    class MockStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def detect_and_persist_changes(
+            self,
+            *,
+            subject: Subject,
+            change_set_id: uuid.UUID | None = None,
+            **_kwargs: Any,
+        ) -> list[Any]:
+            assert change_set_id is not None
+            recorded_change_set_ids.append((subject, change_set_id))
+            return []
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            return digest
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockStore)
+
+    class MockResult:
+        def all(self) -> list[Any]:
+            return []
+
+    class MockSession:
+        async def execute(self, _stmt: Any) -> Any:
+            return MockResult()
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    await run_pipeline(
+        session_factory=cast(Any, mock_session_factory),
+        digest_date=date(2026, 9, 7),
+        window_start=now - timedelta(hours=24),
+        window_end=now,
+    )
+
+    assert len(recorded_change_set_ids) == 3
+    # Two snapshots for subj_a must share the exact same change_set_id
+    assert recorded_change_set_ids[0][0] == subj_a
+    assert recorded_change_set_ids[1][0] == subj_a
+    assert recorded_change_set_ids[0][1] == recorded_change_set_ids[1][1]
+
+    # Different subject must have a different change_set_id
+    assert recorded_change_set_ids[2][0] == subj_b
+    assert recorded_change_set_ids[2][1] != recorded_change_set_ids[0][1]

@@ -13,7 +13,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
-from ai_daily_digest.intelligence.db.models import DigestModel, ExtractedFactModel
+from ai_daily_digest.intelligence.db.models import (
+    ChangeModel,
+    ChangeSetModel,
+    DigestModel,
+    ExtractedFactModel,
+)
+from ai_daily_digest.intelligence.db.repository import PostgresFactStore
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.run import (
     main,
@@ -21,6 +27,12 @@ from ai_daily_digest.intelligence.run import (
     select_snapshots_in_window,
 )
 from ai_daily_digest.shared.ids import new_id
+from ai_daily_digest.shared.schemas import (
+    DisclosureStatus,
+    ExtractedFact,
+    ExtractionMethod,
+    Subject,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -364,3 +376,138 @@ async def test_published_outcome_persists_as_draft_then_publishes(
         assert persisted_digest is not None
         assert persisted_digest.status == "published"
         assert persisted_digest.digest_date == digest_date
+
+
+@pytest.mark.asyncio
+async def test_multiple_snapshots_same_subject_share_one_changeset(  # pylint: disable=too-many-locals
+    open_database_session: _OpenSession,
+) -> None:
+    """Two snapshots for the same subject in one run share one ChangeSet across transactions.
+
+    Regression test for ADR 0007 batch-scoped ChangeSet ID allocation:
+    when separate per-item transactions process multiple snapshots for the
+    same Subject in a single run, the repository must not duplicate-insert
+    the ChangeSet row, and all resulting Changes must reference the exact same
+    ChangeSet ID with sequential positions.
+    """
+    baseline_time = datetime(2026, 9, 6, 12, 0, 0, tzinfo=UTC)
+    window_start = datetime(2026, 9, 7, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 8, 0, 0, 0, tzinfo=UTC)
+    digest_date = date(2026, 9, 7)
+    subject = Subject(company="OpenAI", product="GPT-4o")
+
+    # Seed baseline facts prior to the window so subsequent snapshots generate changes
+    async with open_database_session() as session:
+        _, base_snap_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Initial",
+            content_text="OpenAI sets GPT-4o output price at 15 and input price at 5.",
+            fetched_at=baseline_time,
+        )
+        baseline_facts = [
+            ExtractedFact(
+                id=new_id(),
+                snapshot_id=base_snap_id,
+                field="output_price_usd",
+                value="15",
+                quoted_span="15 dollars",
+                confidence=0.95,
+                extraction_method=ExtractionMethod.DETERMINISTIC,
+                disclosure_status=DisclosureStatus.DISCLOSED,
+            ),
+            ExtractedFact(
+                id=new_id(),
+                snapshot_id=base_snap_id,
+                field="input_price_usd",
+                value="5",
+                quoted_span="5 dollars",
+                confidence=0.95,
+                extraction_method=ExtractionMethod.DETERMINISTIC,
+                disclosure_status=DisclosureStatus.DISCLOSED,
+            ),
+        ]
+        store = PostgresFactStore(session)
+        await store.detect_and_persist_changes(
+            subject=subject,
+            facts=baseline_facts,
+            snapshot_observed_at=baseline_time,
+            detected_at=baseline_time,
+            extraction_version=1,
+        )
+        await session.commit()
+
+    # Create two snapshots in the window for the same subject
+    async with open_database_session() as session:
+        # Snapshot 1: updates output_price_usd to 30
+        _, snap1_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Price Increase",
+            content_text="OpenAI updates GPT-4o output price to 30 dollars.",
+            fetched_at=window_start + timedelta(hours=1),
+        )
+        # Snapshot 2: updates input_price_usd to 10
+        _, snap2_id = await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Input Adjustment",
+            content_text="OpenAI updates GPT-4o input price to 10 dollars.",
+            fetched_at=window_start + timedelta(hours=2),
+        )
+        await session.commit()
+
+    def mock_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system
+        if "output price to 30" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="output_price_usd",
+                        value="30",
+                        quoted_span="30 dollars",
+                        confidence=0.95,
+                    )
+                ]
+            )
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="input_price_usd",
+                    value="10",
+                    quoted_span="10 dollars",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    report = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=digest_date,
+        window_start=window_start,
+        window_end=window_end,
+        extract_call_fn=mock_extract,
+    )
+
+    assert report.selected_snapshot_count == 2
+    assert report.processed_snapshot_count == 2
+    assert report.failed_snapshot_count == 0
+    assert report.extracted_change_count == 2
+
+    async with open_database_session() as session:
+        res = await session.execute(
+            select(ChangeModel)
+            .where(ChangeModel.current_snapshot_id.in_([snap1_id, snap2_id]))
+            .order_by(ChangeModel.position.asc())
+        )
+        changes = list(res.scalars().all())
+        assert len(changes) == 2
+
+        cs_ids = {c.change_set_id for c in changes}
+        assert len(cs_ids) == 1
+        shared_cs_id = cs_ids.pop()
+
+        assert [c.position for c in changes] == [0, 1]
+
+        cs_res = await session.execute(
+            select(ChangeSetModel).where(ChangeSetModel.id == shared_cs_id)
+        )
+        change_sets = list(cs_res.scalars().all())
+        assert len(change_sets) == 1

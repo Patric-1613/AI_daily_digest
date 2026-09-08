@@ -520,17 +520,28 @@ class PostgresFactStore:
             for m in materials
         ]
 
-        cs_model = ChangeSetModel(
-            id=resolved_change_set_id,
-            company_key=ck,
-            product_key=pk,
-            review_status="pending",
-            created_at=datetime.now(UTC),
-        )
-        self._session.add(cs_model)
-        await self._session.flush()
+        start_position = 0
+        existing_cs = await self._session.get(ChangeSetModel, resolved_change_set_id)
+        if existing_cs is None:
+            cs_model = ChangeSetModel(
+                id=resolved_change_set_id,
+                company_key=ck,
+                product_key=pk,
+                review_status="pending",
+                created_at=datetime.now(UTC),
+            )
+            self._session.add(cs_model)
+            await self._session.flush()
+        else:
+            max_pos_stmt = select(func.max(ChangeModel.position)).where(
+                ChangeModel.change_set_id == resolved_change_set_id
+            )
+            max_pos = (await self._session.execute(max_pos_stmt)).scalar()
+            if max_pos is not None:
+                start_position = max_pos + 1
 
-        for position, change in enumerate(candidate_changes):
+        for idx, change in enumerate(candidate_changes):
+            position = start_position + idx
             ch_model = ChangeModel(
                 id=change.id,
                 detected_at=change.detected_at,
