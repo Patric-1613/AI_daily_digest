@@ -310,7 +310,15 @@ async def test_published_outcome_persists_as_draft_then_publishes(
     digest_date = date(2026, 9, 5)
 
     async with open_database_session() as session:
-        _, _snap_id = await _create_item_and_snapshot(
+        # Snapshot 1: Baseline observation establishing context_window_tokens = 64000
+        await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Baseline",
+            content_text="OpenAI introduces GPT-4o with 64000 context window.",
+            fetched_at=window_start + timedelta(hours=1),
+        )
+        # Snapshot 2: Update observation changing context_window_tokens to 128000
+        await _create_item_and_snapshot(
             session,
             title="OpenAI GPT-4o Launch",
             content_text="OpenAI introduces GPT-4o with 128000 context window.",
@@ -319,13 +327,14 @@ async def test_published_outcome_persists_as_draft_then_publishes(
         await session.commit()
 
     def mock_extract(system: str, prompt: str) -> FactExtractionResponse:
-        del system, prompt
+        del system
+        val = "128000" if "128000" in prompt else "64000"
         return FactExtractionResponse(
             facts=[
                 FactCandidate(
                     field="context_window_tokens",
-                    value="128000",
-                    quoted_span="128000 context window",
+                    value=val,
+                    quoted_span=f"{val} context window",
                     confidence=0.95,
                 )
             ]
@@ -339,8 +348,8 @@ async def test_published_outcome_persists_as_draft_then_publishes(
         extract_call_fn=mock_extract,
     )
 
-    assert report.selected_snapshot_count == 1
-    assert report.processed_snapshot_count == 1
+    assert report.selected_snapshot_count == 2
+    assert report.processed_snapshot_count == 2
     assert report.failed_snapshot_count == 0
     assert report.extracted_change_count == 1
     assert report.claim_count == 1
