@@ -487,7 +487,7 @@ async def run_pipeline(  # pylint: disable=too-many-arguments,too-many-locals,to
         title=title,
     )
     digest = _never_auto_publish_comparisons(digest, comparison_claim_ids)
-    if failed_items and digest.status == DigestStatus.PUBLISHED:
+    if failed_items:
         digest = digest.model_copy(update={"status": DigestStatus.REVIEW})
 
     # Digest persistence and publication transaction

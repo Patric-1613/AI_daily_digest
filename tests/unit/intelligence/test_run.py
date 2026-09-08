@@ -615,7 +615,6 @@ async def test_failed_items_forces_digest_to_review(monkeypatch: pytest.MonkeyPa
         digest_date=date(2026, 9, 7),
         status=DigestStatus.PUBLISHED,
         title="AI Daily Digest",
-        published_at=now,
         claims=[],
     )
     monkeypatch.setattr(
@@ -760,4 +759,3 @@ async def test_conversion_and_resolver_failure_isolated_to_item(
     assert processed_titles == ["Valid Item 2"]
     assert report.failures[0]["item_id"] == str(item1.id)
     assert report.failures[0]["error"] == "ValidationError"
-

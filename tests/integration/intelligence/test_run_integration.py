@@ -341,7 +341,7 @@ async def test_published_outcome_persists_as_draft_then_publishes(
 
     def mock_extract(system: str, prompt: str) -> FactExtractionResponse:
         del system
-        val = "30" if "30" in prompt else "15"
+        val = "30" if "30 dollars per million" in prompt else "15"
         return FactExtractionResponse(
             facts=[
                 FactCandidate(
@@ -519,12 +519,44 @@ async def test_failed_item_forces_persisted_digest_to_review(
     open_database_session: _OpenSession,
 ) -> None:
     """A run containing failed items forces the persisted digest to review/unpublished status."""
-    digest_date = date(2026, 9, 10)
-    window_start = datetime(2026, 9, 10, 0, 0, 0, tzinfo=UTC)
-    window_end = datetime(2026, 9, 11, 0, 0, 0, tzinfo=UTC)
+    digest_date = date(2026, 9, 21)
+    window_start = datetime(2026, 9, 21, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC)
 
+    # 1. Establish baseline observation before the window so Item 1 creates a supported claim
     async with open_database_session() as session:
-        # Item 1: Valid item
+        await _create_item_and_snapshot(
+            session,
+            title="OpenAI GPT-4o Baseline",
+            content_text="OpenAI introduces GPT-4o with 64000 context window.",
+            fetched_at=window_start - timedelta(hours=3),
+        )
+        await session.commit()
+
+    def baseline_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system, prompt
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="64000",
+                    quoted_span="64000 context window",
+                    confidence=0.95,
+                )
+            ]
+        )
+
+    await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=date(2026, 9, 20),
+        window_start=window_start - timedelta(hours=6),
+        window_end=window_start - timedelta(hours=1),
+        extract_call_fn=baseline_extract,
+    )
+
+    # 2. Insert items in window: Item 1 has supported upgrade, Item 2 fails
+    async with open_database_session() as session:
+        # Item 1: Valid upgrade that produces a supported claim
         _, _snap1_id = await _create_item_and_snapshot(
             session,
             title="OpenAI GPT-4o Working",
@@ -564,15 +596,15 @@ async def test_failed_item_forces_persisted_digest_to_review(
     )
 
     assert report.failed_snapshot_count == 1
+    assert report.extracted_change_count == 1
+    assert report.claim_count == 1
     assert report.digest_status == "review"
     assert report.published is False
     assert report.status == "partial"
 
     # Verify directly in PostgreSQL that the persisted digest row is review, NOT published
     async with open_database_session() as session:
-        res = await session.execute(
-            select(DigestModel).where(DigestModel.id == report.digest_id)
-        )
+        res = await session.execute(select(DigestModel).where(DigestModel.id == report.digest_id))
         digest_row = res.scalar_one()
         assert digest_row.status == "review"
 
@@ -591,9 +623,9 @@ async def test_failed_digest_persistence_retry_recovers_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A retry after a failed digest persistence recovers already-committed changes without loss."""
-    baseline_date = date(2026, 9, 11)
-    window_start = datetime(2026, 9, 11, 0, 0, 0, tzinfo=UTC)
-    window_end = datetime(2026, 9, 12, 0, 0, 0, tzinfo=UTC)
+    baseline_date = date(2026, 9, 25)
+    window_start = datetime(2026, 9, 25, 0, 0, 0, tzinfo=UTC)
+    window_end = datetime(2026, 9, 26, 0, 0, 0, tzinfo=UTC)
 
     # 1. Establish baseline observation before the window
     async with open_database_session() as session:
@@ -621,7 +653,7 @@ async def test_failed_digest_persistence_retry_recovers_changes(
     # Run pipeline for baseline snapshot so current_facts has 128000
     await run_pipeline(
         session_factory=open_database_session,
-        digest_date=date(2026, 9, 10),
+        digest_date=date(2026, 9, 24),
         window_start=window_start - timedelta(hours=6),
         window_end=window_start - timedelta(hours=2),
         extract_call_fn=baseline_extract,
@@ -708,4 +740,3 @@ async def test_failed_digest_persistence_retry_recovers_changes(
         )
         published_digest = res_published.scalar_one()
         assert published_digest.id == retry_report.digest_id
-
