@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
 from ai_daily_digest.intelligence.db.models import DigestModel, ExtractedFactModel
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
+from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
 from ai_daily_digest.intelligence.run import (
     main,
     run_pipeline,
@@ -326,6 +327,14 @@ async def test_published_outcome_persists_as_draft_then_publishes(
         )
         await session.commit()
 
+    def mock_resolve(system: str, prompt: str) -> ResolveLLMResponse:
+        del system, prompt
+        return ResolveLLMResponse(
+            company="OpenAI",
+            product="PublishGateModel",
+            confidence=0.95,
+        )
+
     def mock_extract(system: str, prompt: str) -> FactExtractionResponse:
         del system
         val = "128000" if "128000" in prompt else "64000"
@@ -345,6 +354,7 @@ async def test_published_outcome_persists_as_draft_then_publishes(
         digest_date=digest_date,
         window_start=window_start,
         window_end=window_end,
+        resolve_llm_call_fn=mock_resolve,
         extract_call_fn=mock_extract,
     )
 
