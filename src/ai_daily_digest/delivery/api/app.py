@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.types import Lifespan
 
 from ai_daily_digest.delivery.api.dependencies import (
+    DigestFeedRepositoryFactory,
     ReadinessProbe,
     ReadinessRegistry,
     SourceItemFeedRepositoryFactory,
@@ -22,10 +23,11 @@ from ai_daily_digest.delivery.api.errors import (
     install_exception_handlers,
 )
 from ai_daily_digest.delivery.api.pagination import CursorCodec
+from ai_daily_digest.delivery.api.routes.digests import router as digests_router
 from ai_daily_digest.delivery.api.routes.health import router as health_router
 from ai_daily_digest.delivery.api.routes.updates import router as updates_router
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.repositories import SourceItemFeedRepository
+from ai_daily_digest.shared.repositories import DigestFeedRepository, SourceItemFeedRepository
 
 API_TITLE = "AI Daily Digest API"
 API_VERSION = "0.1.0"
@@ -43,9 +45,8 @@ def _validate_repository_wiring(
     database_readiness_probe: ReadinessProbe | None,
 ) -> bool:
     """Validate repository lifecycle combinations and report whether the route is enabled."""
-    has_scoped_session = database_session_factory is not None
     has_scoped_repository = repository_factory is not None
-    if has_scoped_session != has_scoped_repository:
+    if has_scoped_repository and database_session_factory is None:
         raise ValueError(
             "database_session_factory and source_item_feed_repository_factory "
             "must be configured together"
@@ -76,7 +77,24 @@ def _build_readiness_configuration(
     )
 
 
-def create_app(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _validate_digest_repository_wiring(
+    *,
+    fixed_repository: DigestFeedRepository | None,
+    database_session_factory: async_sessionmaker[AsyncSession] | None,
+    repository_factory: DigestFeedRepositoryFactory | None,
+    database_readiness_probe: ReadinessProbe | None,
+) -> bool:
+    """Validate the optional digest repository without constraining other DB routes."""
+    if fixed_repository is not None and repository_factory is not None:
+        raise ValueError("configure either a fixed or request-scoped digest repository, not both")
+    if repository_factory is not None and database_session_factory is None:
+        raise ValueError("database_session_factory is required for the digest repository factory")
+    if repository_factory is not None and database_readiness_probe is None:
+        raise ValueError("a database readiness probe is required for a database-backed route")
+    return fixed_repository is not None or repository_factory is not None
+
+
+def create_app(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     *,
     docs_enabled: bool = True,
     required_dependencies: Iterable[str] = (),
@@ -85,6 +103,8 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     source_item_feed_repository: SourceItemFeedRepository | None = None,
     database_session_factory: async_sessionmaker[AsyncSession] | None = None,
     source_item_feed_repository_factory: SourceItemFeedRepositoryFactory | None = None,
+    digest_feed_repository: DigestFeedRepository | None = None,
+    digest_feed_repository_factory: DigestFeedRepositoryFactory | None = None,
     cursor_codec: CursorCodec | None = None,
     cursor_signing_key: bytes | None = None,
     frontend_origin: str | None = None,
@@ -124,6 +144,18 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
         repository_factory=source_item_feed_repository_factory,
         database_readiness_probe=database_readiness_probe,
     )
+    digest_repository_is_configured = _validate_digest_repository_wiring(
+        fixed_repository=digest_feed_repository,
+        database_session_factory=database_session_factory,
+        repository_factory=digest_feed_repository_factory,
+        database_readiness_probe=database_readiness_probe,
+    )
+    if (
+        database_session_factory is not None
+        and source_item_feed_repository_factory is None
+        and digest_feed_repository_factory is None
+    ):
+        raise ValueError("database_session_factory must be configured with a repository factory")
 
     # A tuple, not `set(required_dependencies)`: build_readiness_registry()
     # itself rejects a duplicate name ("required dependency names must
@@ -151,6 +183,8 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     app.state.source_item_feed_repository = source_item_feed_repository
     app.state.database_session_factory = database_session_factory
     app.state.source_item_feed_repository_factory = source_item_feed_repository_factory
+    app.state.digest_feed_repository = digest_feed_repository
+    app.state.digest_feed_repository_factory = digest_feed_repository_factory
 
     if frontend_origin is not None:
         app.add_middleware(
@@ -165,10 +199,10 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
         app.state.cursor_codec = cursor_codec
     elif cursor_signing_key is not None:
         app.state.cursor_codec = CursorCodec(cursor_signing_key)
-    elif repository_is_configured:
+    elif repository_is_configured or digest_repository_is_configured:
         raise ValueError(
-            "cursor_codec or cursor_signing_key is required when "
-            "source_item_feed_repository is configured"
+            "cursor_codec or cursor_signing_key is required when a paginated repository "
+            "is configured"
         )
     else:
         app.state.cursor_codec = None
@@ -199,4 +233,6 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     app.include_router(health_router)
     if repository_is_configured:
         app.include_router(updates_router)
+    if digest_repository_is_configured:
+        app.include_router(digests_router)
     return app

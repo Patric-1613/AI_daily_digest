@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from ai_daily_digest.shared.ids import Uuid7Id
+from ai_daily_digest.shared.schemas import DigestStatus
 
-__all__ = ["UpdateSummary"]
+__all__ = ["DigestSummary", "UpdateSummary"]
+
+
+class DigestSummary(BaseModel):
+    """Public list projection of a published digest."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: Uuid7Id
+    digest_date: date
+    status: DigestStatus
+    title: str
 
 
 class UpdateSummary(BaseModel):

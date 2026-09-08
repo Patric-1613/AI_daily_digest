@@ -392,7 +392,27 @@ non-disclosure statement itself:
 
 ## Digest contract
 
-Digest list and detail responses use a wrapper rather than returning unowned claim arrays:
+`GET /v1/digests` returns a cursor-paginated `Page[DigestSummary]`, ordered by
+`(digest_date DESC, id DESC)`. It accepts `limit`, `cursor`, and optional `date_from` (inclusive)
+and `date_to` (exclusive) calendar-date filters. Only published digests are returned; that hidden
+constraint is bound into every cursor. Each list item contains only `id`, `digest_date`, `status`,
+and `title`. Claims and citations are reserved for the later detail endpoint.
+
+```json
+{
+  "items": [
+    {
+      "id": "01a034ed-e100-7e73-ab06-1fecafdc495c",
+      "digest_date": "2026-08-24",
+      "status": "published",
+      "title": "AI Daily Digest — 24 August 2026"
+    }
+  ],
+  "next_cursor": null
+}
+```
+
+The later detail response will use a wrapper rather than returning an unowned claim array:
 
 ```json
 {
