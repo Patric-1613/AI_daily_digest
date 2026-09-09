@@ -9,6 +9,7 @@ agreement (shared/, same CODEOWNERS sign-off rule as schemas.py).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -113,9 +114,12 @@ class PriceComparisonRule:
     def parse(self, value: str) -> float:
         cleaned = value.strip().lstrip("$").replace(",", "").strip()
         try:
-            return float(cleaned)
+            parsed = float(cleaned)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Cannot parse price value: {value!r}") from exc
+        if not math.isfinite(parsed):
+            raise ValueError(f"Price value must be finite, got: {value!r}")
+        return parsed
 
     def relation(self, parsed_a: object, parsed_b: object) -> str:
         # Same reasoning as IntegerComparisonRule.relation's own comment

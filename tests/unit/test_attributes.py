@@ -33,6 +33,12 @@ def test_price_rule_parse_rejects_non_numeric_strings(raw: str) -> None:
         PriceComparisonRule().parse(raw)
 
 
+@pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "Infinity", "-Infinity"])
+def test_price_rule_parse_rejects_non_finite_values(raw: str) -> None:
+    with pytest.raises(ValueError, match="Price value must be finite"):
+        PriceComparisonRule().parse(raw)
+
+
 def test_price_rule_relation_lower() -> None:
     rule = PriceComparisonRule()
     assert rule.relation(rule.parse("3"), rule.parse("5")) == "lower"
