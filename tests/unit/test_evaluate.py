@@ -230,15 +230,15 @@ def test_main_fails_loudly_when_the_fixture_pack_has_no_digests(
 
 def test_evaluate_fixture_pack_scores_digest_metrics_without_change_recall() -> None:
     """Proves evaluate_fixture_pack() scores citation_validity, unsupported_claims,
-    and duplicate_rate on the real fixture digest, with change_recall deliberately
+    and duplicate_rate aggregated across all fixture digests, with change_recall deliberately
     excluded (None, rendered as N/A).
     """
     result = evaluate_fixture_pack()
-    assert result.citation_validity == 1.0
-    assert result.unsupported_claims == 0
+    assert result.citation_validity == 0.5
+    assert result.unsupported_claims == 2
     assert result.duplicate_rate == 0.0
     assert result.change_recall is None
-    assert result.as_table_row("fixture-pack") == "| fixture-pack | 100% | 0 | 0% | N/A |"
+    assert result.as_table_row("fixture-pack") == "| fixture-pack | 50% | 2 | 0% | N/A |"
 
 
 def test_evaluate_change_detection_case_scores_synthetic_smoke_test() -> None:
@@ -275,8 +275,8 @@ def test_change_detection_case_is_order_independent() -> None:
 
 
 def test_evaluate_fixture_pack_is_order_independent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Proves evaluate_fixture_pack produces identical metrics even if snapshots or items
-    in the fixture loader are loaded in reverse order.
+    """Proves evaluate_fixture_pack produces identical metrics even if snapshots, items,
+    or digests in the fixture loader are loaded in reverse order.
     """
     from ai_daily_digest.intelligence.loaders import FixtureLoader
 
@@ -285,9 +285,11 @@ def test_evaluate_fixture_pack_is_order_independent(monkeypatch: pytest.MonkeyPa
 
     reversed_snapshots = list(reversed(loader.load_snapshots()))
     reversed_items = list(reversed(loader.load_items()))
+    reversed_digests = list(reversed(loader.load_digests()))
 
     monkeypatch.setattr(FixtureLoader, "load_snapshots", lambda self: reversed_snapshots)
     monkeypatch.setattr(FixtureLoader, "load_items", lambda self: reversed_items)
+    monkeypatch.setattr(FixtureLoader, "load_digests", lambda self: reversed_digests)
     reversed_result = evaluate_fixture_pack(loader)
 
     assert base_result.citation_validity == reversed_result.citation_validity

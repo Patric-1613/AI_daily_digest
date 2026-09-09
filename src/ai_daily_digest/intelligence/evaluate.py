@@ -296,8 +296,9 @@ def evaluate_change_detection_case(
 def evaluate_fixture_pack(loader: FixtureLoader | None = None) -> EvalResult:
     """Score the Milestone-0 fixture pack from tests/fixtures/contracts/.
 
-    Scores citation_validity, unsupported_claims, and duplicate_rate against
-    the fixture pack's real recorded digest (digests[0]) and snapshots.
+    Aggregates citation_validity, unsupported_claims, and duplicate_rate across
+    all digests in the fixture pack, with a denominator covering all claims across
+    all digests (not just digests[0]).
 
     Does NOT compute change_recall (left as None, rendered as N/A in the results
     table), mirroring the precedent in evaluate_digest_run() (PR #97) of excluding
@@ -325,16 +326,47 @@ def evaluate_fixture_pack(loader: FixtureLoader | None = None) -> EvalResult:
 
     known_snapshot_ids = {s.id for s in snapshots}
     snapshot_resolver = InMemorySnapshotResolver({s.id: s for s in snapshots})
-    digest = digests[0]
+
+    total_claims = sum(len(d.claims) for d in digests)
+    if total_claims == 0:
+        return EvalResult(
+            citation_validity=1.0,
+            unsupported_claims=0,
+            duplicate_rate=0.0,
+            change_recall=None,
+        )
+
+    total_supported = sum(
+        1
+        for d in digests
+        for c in d.claims
+        if validate_claim(
+            c, known_snapshot_ids, snapshot_resolver=snapshot_resolver
+        ).validation_status
+        == ClaimValidationStatus.SUPPORTED
+    )
+    total_unsupported = sum(
+        1
+        for d in digests
+        for c in d.claims
+        if validate_claim(
+            c, known_snapshot_ids, snapshot_resolver=snapshot_resolver
+        ).validation_status
+        != ClaimValidationStatus.SUPPORTED
+    )
+    total_duplicates = 0
+    for d in digests:
+        seen: Counter[str] = Counter()
+        for claim in d.claims:
+            key = _normalise_claim_text(claim.text)
+            if seen[key] > 0:
+                total_duplicates += 1
+            seen[key] += 1
 
     return EvalResult(
-        citation_validity=citation_validity(
-            digest, known_snapshot_ids, snapshot_resolver=snapshot_resolver
-        ),
-        unsupported_claims=unsupported_claim_count(
-            digest, known_snapshot_ids, snapshot_resolver=snapshot_resolver
-        ),
-        duplicate_rate=duplicate_rate(digest),
+        citation_validity=total_supported / total_claims,
+        unsupported_claims=total_unsupported,
+        duplicate_rate=total_duplicates / total_claims,
         change_recall=None,
     )
 
