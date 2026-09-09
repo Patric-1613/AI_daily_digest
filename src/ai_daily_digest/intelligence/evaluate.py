@@ -184,6 +184,10 @@ async def evaluate_digest_run(
     against real stored snapshots. Does not compute change_recall since no
     gold reference changes exist for arbitrary pipeline runs.
 
+    Operator/CLI-only helper, not to be exposed via any HTTP route (e.g.
+    GET /v1/digests/{id}), and a missing digest raising ValueError here should
+    not be reused as an HTTP 500 by any future caller.
+
     Args:
         digest_id: Unique ID of the persisted digest.
         session: Active asynchronous SQLAlchemy session.
