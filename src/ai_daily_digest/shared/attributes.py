@@ -9,9 +9,17 @@ agreement (shared/, same CODEOWNERS sign-off rule as schemas.py).
 
 from __future__ import annotations
 
-import math
+import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
+
+_PRICE_PATTERN = re.compile(r"^\$?(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?$")
+"""Strict price literal: at most one leading "$", digits either bare or
+comma-grouped in threes, an optional decimal part. No sign, no scientific
+notation, no underscores, no repeated "$" -- each of those must fail the
+match, not be silently tolerated by a looser conversion (see
+PriceComparisonRule.parse())."""
 
 COMPARABLE_FIELDS: dict[str, str] = {
     # field: human-readable label, used in prompts and rendered UI/email.
@@ -97,37 +105,58 @@ class IntegerComparisonRule:
 
 @dataclass(frozen=True)
 class PriceComparisonRule:
-    """Phase 2 of ADR 0005: input_price_usd/output_price_usd's own
-    representation -- a plain USD-per-unit numeric string, with an
-    optional leading "$" and thousands separators tolerated (the same
-    formatting-tolerance grounding.py's numbers_in()/value_supported_by_quote()
-    already extend to a disclosed value elsewhere in this codebase, kept
-    consistent here). Deliberately still excludes currency conversion,
-    a differing basis (per-token vs. per-million-tokens), and any other
-    unit mismatch across the two sides being compared -- this rule
-    trusts the stored value's basis is already consistent for a given
-    field, the same trust IntegerComparisonRule already places in
-    context_window_tokens always meaning the same unit (tokens)."""
+    """input_price_usd/output_price_usd's own representation -- a plain
+    USD-per-unit numeric string, with an optional leading "$" and
+    thousands separators tolerated (the same formatting-tolerance
+    grounding.py's numbers_in()/value_supported_by_quote() already
+    extend to a disclosed value elsewhere in this codebase, kept
+    consistent here). Uses Decimal, not float, for exact comparison of
+    money-shaped values.
+
+    NOT currently registered in COMPARISON_RULES (see below) -- this
+    class exists and is unit-tested, but ADR 0005 point (f) requires
+    each comparable field's currency/unit/basis representation be
+    designed and accepted before it's enabled for comparison, and no
+    such design has been accepted for prices yet. Registering this
+    class was reverted after review (2026-09-09): the class trusted the
+    stored value's basis is already consistent for a given field (the
+    same trust IntegerComparisonRule places in context_window_tokens
+    always meaning the same unit), but nothing enforces that a
+    per-token price is never compared against a per-million-tokens
+    price -- exactly the currency/unit/basis design ADR 0005 point (f)
+    calls for and this class does not yet provide."""
 
     unit: str = "USD"
 
-    def parse(self, value: str) -> float:
-        cleaned = value.strip().lstrip("$").replace(",", "").strip()
+    def parse(self, value: str) -> Decimal:
+        cleaned = value.strip()
+        if not _PRICE_PATTERN.match(cleaned):
+            # Catches negative signs, scientific notation, underscores,
+            # a repeated "$", and anything else the strict pattern
+            # doesn't recognize as a plain price literal -- rejected
+            # before Decimal ever sees it, not left to Decimal's own
+            # (much more permissive) grammar to reject or silently
+            # accept.
+            raise ValueError(f"Cannot parse price value: {value!r}")
         try:
-            parsed = float(cleaned)
-        except (TypeError, ValueError) as exc:
+            parsed = Decimal(cleaned.lstrip("$").replace(",", ""))
+        except InvalidOperation as exc:
             raise ValueError(f"Cannot parse price value: {value!r}") from exc
-        if not math.isfinite(parsed):
-            raise ValueError(f"Price value must be finite, got: {value!r}")
+        if not parsed.is_finite():
+            # Unreachable given _PRICE_PATTERN's grammar (no way to spell
+            # NaN/Infinity in digits-only), kept as defense in depth --
+            # matches the explicit-raise-not-assert style used throughout
+            # this file, and stays correct if the pattern ever loosens.
+            raise ValueError(f"Cannot parse price value: {value!r}")
         return parsed
 
     def relation(self, parsed_a: object, parsed_b: object) -> str:
         # Same reasoning as IntegerComparisonRule.relation's own comment
-        # -- object, not float, to match the ComparisonRule Protocol
+        # -- object, not Decimal, to match the ComparisonRule Protocol
         # exactly; an explicit raise (not assert) so it still fails
         # loudly under -O and isn't stripped (bandit B101).
-        if not isinstance(parsed_a, (int, float)) or not isinstance(parsed_b, (int, float)):
-            raise TypeError(f"relation() expected floats/ints, got {parsed_a!r} and {parsed_b!r}")
+        if not isinstance(parsed_a, Decimal) or not isinstance(parsed_b, Decimal):
+            raise TypeError(f"relation() expected two Decimals, got {parsed_a!r} and {parsed_b!r}")
         if parsed_a < parsed_b:
             return "lower"
         if parsed_a > parsed_b:
@@ -137,8 +166,13 @@ class PriceComparisonRule:
 
 COMPARISON_RULES: dict[str, ComparisonRule] = {
     "context_window_tokens": IntegerComparisonRule(unit="tokens"),
-    "input_price_usd": PriceComparisonRule(unit="USD"),
-    "output_price_usd": PriceComparisonRule(unit="USD"),
+    # input_price_usd, output_price_usd: PriceComparisonRule exists and
+    # is unit-tested (see test_attributes.py) but is deliberately NOT
+    # registered here -- ADR 0005 point (f) requires a currency/unit/
+    # basis design (e.g. reconciling per-token vs. per-million-tokens
+    # pricing) to be accepted before price comparison is enabled, and
+    # that follow-up ADR hasn't been written yet. Register these two
+    # once it is.
     # benchmark_scores, availability_regions, modalities, licence_terms:
     # still deliberately absent -- see IntegerComparisonRule's docstring
     # and ADR 0005 point (f); each needs its own representation designed
