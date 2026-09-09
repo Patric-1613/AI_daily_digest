@@ -29,6 +29,15 @@ class SubscriptionTokenPurpose(StrEnum):
     UNSUBSCRIBE = "unsubscribe"
 
 
+class SubscriptionTokenEnvironment(StrEnum):
+    """Deployment namespaces that prevent cross-environment token use."""
+
+    DEVELOPMENT = "dev"
+    TEST = "test"
+    STAGING = "staging"
+    PRODUCTION = "prod"
+
+
 class InvalidSubscriptionTokenError(ValueError):
     """A deliberately detail-free public-safe token validation failure."""
 
@@ -82,11 +91,13 @@ class SubscriptionTokenCodec:
     def __init__(
         self,
         *,
+        environment: SubscriptionTokenEnvironment,
         keys: Mapping[SubscriptionTokenPurpose, Mapping[str, bytes]],
         active_key_ids: Mapping[SubscriptionTokenPurpose, str],
         random_bytes: Callable[[int], bytes] = secrets.token_bytes,
     ) -> None:
         copied: dict[SubscriptionTokenPurpose, Mapping[str, bytes]] = {}
+        seen_key_ids: set[str] = set()
         seen_material: set[bytes] = set()
         for purpose in SubscriptionTokenPurpose:
             purpose_keys = dict(keys.get(purpose, {}))
@@ -96,10 +107,15 @@ class SubscriptionTokenCodec:
             for key_id, material in purpose_keys.items():
                 if _KEY_ID.fullmatch(key_id) is None:
                     raise ValueError("subscription token key IDs must use safe lowercase syntax")
+                if not key_id.startswith(f"{environment.value}-"):
+                    raise ValueError("subscription token key ID does not match the environment")
+                if key_id in seen_key_ids:
+                    raise ValueError("subscription token key IDs must be unique across purposes")
                 if len(material) < MIN_SIGNING_KEY_BYTES:
                     raise ValueError("subscription token signing keys must be at least 32 bytes")
                 if material in seen_material:
                     raise ValueError("subscription token key material cannot be reused")
+                seen_key_ids.add(key_id)
                 seen_material.add(material)
             copied[purpose] = MappingProxyType(purpose_keys)
         self._keys = MappingProxyType(copied)
@@ -117,6 +133,8 @@ class SubscriptionTokenCodec:
             hmac.digest(self._keys[purpose][key_id], unsigned.encode("ascii"), "sha256")
         )
         token = f"{unsigned}.{signature}"
+        # Unreachable with today's 32-character key-ID limit, but retained
+        # as a final invariant if the envelope or key-ID policy evolves.
         if len(token) > MAX_TOKEN_LENGTH:
             raise RuntimeError("configured key ID makes the token exceed its length bound")
         return IssuedSubscriptionToken(
