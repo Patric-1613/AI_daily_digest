@@ -316,9 +316,9 @@ def test_swapped_attribution_is_now_structurally_impossible() -> None:
 def test_field_with_no_registered_comparison_rule_is_rejected() -> None:
     """benchmark_scores is a real COMPARABLE_FIELDS entry and is present
     in the table, but ADR 0005 point 2 registers no ComparisonRule for
-    it (still true after Phase 2 added price fields -- benchmark_scores
-    needs its own representation designed first) -- excluded from
-    comparison entirely, not guessed at."""
+    it (price fields are also deliberately unregistered pending the basis
+    ADR -- benchmark_scores needs its own representation designed first) --
+    excluded from comparison entirely, not guessed at."""
 
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "benchmark_scores")
