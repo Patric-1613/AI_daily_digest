@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 
@@ -8,8 +9,10 @@ from ai_daily_digest.intelligence.evaluate import (
     change_recall,
     citation_validity,
     duplicate_rate,
+    evaluate_fixture_pack,
     main,
     run_eval,
+    run_self_check,
     unsupported_claim_count,
 )
 from ai_daily_digest.shared.schemas import (
@@ -219,3 +222,75 @@ def test_main_fails_loudly_when_the_fixture_pack_has_no_digests(
 
     with pytest.raises(RuntimeError, match=r"no digests.*digests\.json"):
         main()
+
+
+def test_evaluate_fixture_pack_produces_non_trivial_scores() -> None:
+    """Proves run_eval() against the real Milestone-0 fixture pack produces
+    non-trivial (not blanket 100%) scores.
+
+    The fixture pack's known edge cases predict less-than-perfect scores:
+    - Expected changes in change_sets.json covers 3 total changes across the pack
+      (OpenAI GPT-4o context window, Gemini 1.5 Pro price decrease, and Gemini
+      context window disclosure).
+    - The initial batch run (digests[0] / change_sets[0]) detects only the 1
+      OpenAI GPT-4o context window change:
+        * Anthropic's Claude item is sparse (context window not disclosed, so no
+          change is detected for it).
+        * The duplicate-event items (Items 1 & 2 covering the same GPT-4o context
+          window event) collapse to the single detected change.
+    Therefore, change recall is 1/3 (~33%), proving the evaluation harness
+    yields genuine, discriminating signal rather than a trivial 100% self-check.
+    """
+    result = evaluate_fixture_pack()
+    assert result.citation_validity == 1.0
+    assert result.unsupported_claims == 0
+    assert result.duplicate_rate == 0.0
+    assert result.change_recall == pytest.approx(1 / 3)
+    assert "33%" in result.as_table_row("fixture-pack")
+
+
+def test_run_self_check_preserves_plumbing_check() -> None:
+    """The plumbing self-check path remains available and scores 100%."""
+    result = run_self_check()
+    assert result.citation_validity == 1.0
+    assert result.unsupported_claims == 0
+    assert result.duplicate_rate == 0.0
+    assert result.change_recall == 1.0
+    assert "100%" in result.as_table_row("self-check")
+
+
+def test_main_runs_fixture_pack_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """main() runs against fixture pack by default and logs to docs/eval_results.md."""
+    test_results_file = tmp_path / "eval_results.md"
+    monkeypatch.setattr("ai_daily_digest.intelligence.evaluate.RESULTS_FILE", test_results_file)
+
+    main([])
+
+    assert test_results_file.exists()
+    content = test_results_file.read_text(encoding="utf-8")
+    assert "fixture-pack" in content
+    assert "33%" in content
+
+
+def test_main_supports_self_check_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """main(["--self-check"]) runs the plumbing self-check."""
+    test_results_file = tmp_path / "eval_results.md"
+    monkeypatch.setattr("ai_daily_digest.intelligence.evaluate.RESULTS_FILE", test_results_file)
+
+    main(["--self-check"])
+
+    assert test_results_file.exists()
+    content = test_results_file.read_text(encoding="utf-8")
+    assert "self-check" in content
+    assert "100%" in content
+
+
+def test_evaluate_fixture_pack_fails_when_input_batch_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """evaluate_fixture_pack raises when items or snapshots are missing."""
+    from ai_daily_digest.intelligence.loaders import FixtureLoader
+
+    monkeypatch.setattr(FixtureLoader, "load_items", lambda self: [])
+    with pytest.raises(RuntimeError, match=r"input batch is incomplete"):
+        evaluate_fixture_pack()

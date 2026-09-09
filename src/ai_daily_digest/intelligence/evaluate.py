@@ -10,6 +10,7 @@ prompt instead (see intelligence/CLAUDE.md's testing rules).
 
 from __future__ import annotations
 
+import sys
 import uuid
 from collections import Counter
 from dataclasses import dataclass
@@ -137,15 +138,11 @@ def run_eval(
     snapshot_resolver: passed straight through to citation_validity()/
     unsupported_claim_count() for the content-grounding check.
 
-    NOTE on "frozen test set": there is no real held-out gold test set
-    yet — that needs the team's real tests/fixtures/contracts/ pack
-    (Milestone 0, not built) and a live pipeline run through
-    intelligence/graph.py against it (needs a real ANTHROPIC_API_KEY and
-    a deliberate decision to spend on it, not something to do silently).
-    Until then, `main()` below runs a self-check: it scores the current
-    draft fixture pack against itself, which proves the metrics work
-    correctly but is not real evaluation signal — a self-check trivially
-    scores close to 100%.
+    NOTE on evaluation against the Milestone-0 fixture pack:
+    The fixture pack in tests/fixtures/contracts/ provides real post-ingestion
+    items, snapshots, facts, change sets, and digests. evaluate_fixture_pack()
+    scores recorded pipeline data against the gold reference change sets.
+    The self-check path (run_self_check) remains available as a plumbing test.
     """
     return EvalResult(
         citation_validity=citation_validity(
@@ -159,43 +156,114 @@ def run_eval(
     )
 
 
-def main() -> None:
-    """`make eval` entrypoint. See run_eval()'s docstring — this is
-    currently a self-check against the draft fixture pack, not a real
-    evaluation of pipeline output. Prints a table and appends a labeled,
-    timestamped row to docs/eval_results.md."""
-    loader = FixtureLoader()
+def evaluate_fixture_pack(loader: FixtureLoader | None = None) -> EvalResult:
+    """Score the Milestone-0 fixture pack from tests/fixtures/contracts/.
+
+    Loads source_items.json and snapshots.json as the input batch context,
+    change_sets.json as the gold-reference expected_changes, and evaluates
+    the pipeline's recorded digest and detected changes against them.
+    """
+    if loader is None:
+        loader = FixtureLoader()
+
+    items = loader.load_items()
     snapshots = loader.load_snapshots()
     change_sets = loader.load_change_sets()
     digests = loader.load_digests()
 
+    if not digests:
+        raise RuntimeError(
+            f"contract fixture pack has no digests ({loader.fixtures_dir / 'digests.json'}); "
+            "the eval harness needs at least one digest to score -- repopulate the "
+            "fixture pack (see tests/fixtures/contracts/README.md)"
+        )
+
+    if not items or not snapshots:
+        raise RuntimeError(
+            f"contract fixture pack input batch is incomplete ({loader.fixtures_dir}); "
+            "the eval harness needs source items and snapshots to score."
+        )
+
     known_snapshot_ids = {s.id for s in snapshots}
     snapshot_resolver = InMemorySnapshotResolver({s.id: s for s in snapshots})
-    changes = [change for cs in change_sets for change in cs.changes]
+
+    # change_sets.json as the gold-reference expected_changes for run_eval()
+    expected_changes = [change for cs in change_sets for change in cs.changes]
+
+    # Input batch corresponds to the initial run producing the first digest
+    digest = digests[0]
+    detected_changes = change_sets[0].changes if change_sets else []
+
+    return run_eval(
+        digest,
+        detected_changes,
+        expected_changes,
+        known_snapshot_ids,
+        snapshot_resolver=snapshot_resolver,
+    )
+
+
+def run_self_check(loader: FixtureLoader | None = None) -> EvalResult:
+    """Plumbing self-check: scores the draft fixture pack against itself.
+
+    Proves the metrics harness works mechanically, scoring 100% because
+    detected_changes matches expected_changes exactly.
+    """
+    if loader is None:
+        loader = FixtureLoader()
+
+    snapshots = loader.load_snapshots()
+    change_sets = loader.load_change_sets()
+    digests = loader.load_digests()
+
     if not digests:
-        # No artificial placeholder date -- a `Digest.digest_date` is a real
-        # `datetime.date` now (ADR 0008 section 5.B), and inventing one here
-        # would put a meaningless business date into the eval report. The
-        # self-check genuinely needs a digest to score; an empty pack is a
-        # broken pack, so say so and stop.
         raise RuntimeError(
             f"contract fixture pack has no digests ({loader.fixtures_dir / 'digests.json'}); "
             "the eval self-check needs at least one digest to score -- repopulate the "
             "fixture pack (see tests/fixtures/contracts/README.md)"
         )
+
+    known_snapshot_ids = {s.id for s in snapshots}
+    snapshot_resolver = InMemorySnapshotResolver({s.id: s for s in snapshots})
+    changes = [change for cs in change_sets for change in cs.changes]
     digest = digests[0]
 
-    result = run_eval(
-        digest, changes, changes, known_snapshot_ids, snapshot_resolver=snapshot_resolver
+    return run_eval(
+        digest,
+        changes,
+        changes,
+        known_snapshot_ids,
+        snapshot_resolver=snapshot_resolver,
     )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """`make eval` entrypoint.
+
+    By default, runs against the real Milestone-0 fixture pack
+    (tests/fixtures/contracts/), prints the result table, and appends a labeled,
+    timestamped row ("fixture-pack") to docs/eval_results.md.
+
+    Pass `--self-check` to run the plumbing self-check instead.
+    """
+    args = argv if argv is not None else sys.argv[1:]
+    is_self_check = "--self-check" in args
+
+    loader = FixtureLoader()
+    if is_self_check:
+        result = run_self_check(loader)
+        label = "self-check"
+    else:
+        result = evaluate_fixture_pack(loader)
+        label = "fixture-pack"
 
     print("| Run | Citation validity | Unsupported claims | Duplicate rate | Change recall |")
     print("|---|---|---|---|---|")
-    print(result.as_table_row("self-check (fixture pack vs. itself)"))
+    print(result.as_table_row(label))
 
     timestamp = datetime.now(UTC).isoformat()
     row = (
-        f"| {timestamp} | self-check | {result.citation_validity:.0%} | "
+        f"| {timestamp} | {label} | {result.citation_validity:.0%} | "
         f"{result.unsupported_claims} | {result.duplicate_rate:.0%} | "
         f"{result.change_recall:.0%} |\n"
     )
