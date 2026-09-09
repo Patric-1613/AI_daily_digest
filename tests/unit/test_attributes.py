@@ -59,6 +59,20 @@ def test_price_rule_parse_rejects_malformed_strings(raw: str) -> None:
         PriceComparisonRule().parse(raw)
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "1,2",
+        "12,34",
+        "1,234,56",
+        "$1,00",
+    ],
+)
+def test_price_rule_parse_rejects_malformed_comma_grouping(raw: str) -> None:
+    with pytest.raises(ValueError, match="Cannot parse price value"):
+        PriceComparisonRule().parse(raw)
+
+
 def test_price_rule_relation_lower() -> None:
     rule = PriceComparisonRule()
     assert rule.relation(rule.parse("3"), rule.parse("5")) == "lower"

@@ -274,10 +274,10 @@ def run_daily(  # pylint: disable=too-many-arguments,too-many-locals
 
     comparison_claim_ids: set[uuid.UUID] = set()
     # Default to only the fields with a registered ComparisonRule (ADR
-    # 0005 point 2 -- context_window_tokens, input_price_usd,
-    # output_price_usd) -- there is no point asking the model to
-    # consider a field compare_subjects() can never resolve to a claim
-    # regardless of what it proposes.
+    # 0005 point 2 -- context_window_tokens; input_price_usd and
+    # output_price_usd are unregistered pending the basis ADR) -- there
+    # is no point asking the model to consider a field compare_subjects()
+    # can never resolve to a claim regardless of what it proposes.
     fields = comparison_fields if comparison_fields is not None else list(COMPARISON_RULES)
     if fields and len(acc.resolved_subjects) >= 2:
         try:
