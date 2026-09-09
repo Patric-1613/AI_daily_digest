@@ -21,12 +21,10 @@ from ai_daily_digest.intelligence.db.models import (
     ExtractedFactModel,
 )
 from ai_daily_digest.intelligence.db.repository import PostgresFactStore
-from ai_daily_digest.intelligence.evaluate import (
-    DigestRunEvaluation,
-    evaluate_digest_run,
-)
 from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
 from ai_daily_digest.intelligence.run import (
+    DigestRunEvaluation,
+    evaluate_digest_run,
     main,
     run_pipeline,
     select_snapshots_in_window,

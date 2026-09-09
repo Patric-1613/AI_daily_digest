@@ -9,17 +9,20 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
+from ai_daily_digest.intelligence.db.repository import PostgresFactStore
 from ai_daily_digest.intelligence.run import (
+    DigestRunEvaluation,
     DigestRunReport,
     _claims_equivalent,
     _emit_failure,
     _never_auto_publish_comparisons,
     _parse_args,
+    evaluate_digest_run,
     exit_code_for,
     main,
     render_report,
@@ -31,6 +34,14 @@ from ai_daily_digest.intelligence.run import (
 )
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import Digest, DigestClaim, DigestStatus, Subject
+from tests.uuid_samples import (
+    CLAIM_1,
+    CLAIM_2,
+    DIGEST_1,
+    ITEM_1,
+    SNAPSHOT_1,
+    SNAPSHOT_MISSING,
+)
 
 
 def test_resolve_window_defaults() -> None:
@@ -1184,3 +1195,118 @@ async def test_run_pipeline_routes_to_review_when_new_claims_differ_from_publish
     assert len(persisted_digests) == 1
     assert persisted_digests[0].status == DigestStatus.REVIEW
     assert persisted_digests[0].id == new_digest_id
+
+
+# --- evaluate_digest_run ---
+
+
+@pytest.mark.asyncio
+async def test_evaluate_digest_run_raises_when_digest_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    missing_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        PostgresFactStore,
+        "get_digest_by_id",
+        AsyncMock(return_value=None),
+    )
+
+    with pytest.raises(ValueError, match=f"Digest with id {missing_id} not found"):
+        await evaluate_digest_run(missing_id, session)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_digest_run_scores_persisted_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    digest_id = DIGEST_1
+    snap_id = SNAPSHOT_1
+    claim = DigestClaim(
+        id=CLAIM_1,
+        text="GPT-4o has 128000 context window.",
+        citation_snapshot_ids=[snap_id],
+    )
+    digest = Digest(
+        id=digest_id,
+        digest_date=date(2026, 8, 20),
+        status=DigestStatus.DRAFT,
+        title="Test",
+        claims=[claim],
+    )
+
+    snap_row = DocumentSnapshotRow(
+        id=snap_id,
+        source_item_id=ITEM_1,
+        fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
+        content_hash=f"sha256:{snap_id}",
+        content_text="OpenAI introduces GPT-4o with 128000 context window.",
+    )
+
+    monkeypatch.setattr(
+        PostgresFactStore,
+        "get_digest_by_id",
+        AsyncMock(return_value=digest),
+    )
+
+    exec_res = MagicMock()
+    exec_res.scalars.return_value.all.return_value = [snap_row]
+    session.execute = AsyncMock(return_value=exec_res)
+
+    eval_result: DigestRunEvaluation = await evaluate_digest_run(digest_id, session)
+    assert eval_result.citation_validity == 1.0
+    assert eval_result.unsupported_claim_count == 0
+    assert eval_result.duplicate_rate == 0.0
+
+
+@pytest.mark.asyncio
+async def test_evaluate_digest_run_detects_unsupported_claims_and_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    digest_id = DIGEST_1
+    snap_id_valid = SNAPSHOT_1
+    snap_id_missing = SNAPSHOT_MISSING
+
+    claim1 = DigestClaim(
+        id=CLAIM_1,
+        text="GPT-4o has 128000 context window.",
+        citation_snapshot_ids=[snap_id_valid],
+    )
+    claim2 = DigestClaim(
+        id=CLAIM_2,
+        text="GPT-4o has 128000 context window.",
+        citation_snapshot_ids=[snap_id_missing],
+    )
+    digest = Digest(
+        id=digest_id,
+        digest_date=date(2026, 8, 20),
+        status=DigestStatus.DRAFT,
+        title="Test",
+        claims=[claim1, claim2],
+    )
+
+    snap_row_valid = DocumentSnapshotRow(
+        id=snap_id_valid,
+        source_item_id=ITEM_1,
+        fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
+        content_hash=f"sha256:{snap_id_valid}",
+        content_text="OpenAI introduces GPT-4o with 128000 context window.",
+    )
+
+    monkeypatch.setattr(
+        PostgresFactStore,
+        "get_digest_by_id",
+        AsyncMock(return_value=digest),
+    )
+
+    exec_res = MagicMock()
+    exec_res.scalars.return_value.all.return_value = [snap_row_valid]
+    session.execute = AsyncMock(return_value=exec_res)
+
+    eval_result: DigestRunEvaluation = await evaluate_digest_run(digest_id, session)
+    assert eval_result.citation_validity == 0.5
+    assert eval_result.unsupported_claim_count == 1
+    assert eval_result.duplicate_rate == 0.5
