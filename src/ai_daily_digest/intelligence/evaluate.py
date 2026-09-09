@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import uuid
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -119,19 +120,20 @@ def change_recall(detected_changes: list[Change], expected_changes: list[Change]
 
 @dataclass
 class EvalResult:
-    citation_validity: float
-    unsupported_claims: int
-    duplicate_rate: float
-    change_recall: float
+    citation_validity: float | None = None
+    unsupported_claims: int | None = None
+    duplicate_rate: float | None = None
+    change_recall: float | None = None
 
     def as_table_row(self, label: str) -> str:
         """label identifies the run (e.g. a prompt version, or
         "self-check") so consecutive `make eval` rows in
         docs/eval_results.md stay distinguishable at a glance."""
-        return (
-            f"| {label} | {self.citation_validity:.0%} | {self.unsupported_claims} | "
-            f"{self.duplicate_rate:.0%} | {self.change_recall:.0%} |"
-        )
+        cit = f"{self.citation_validity:.0%}" if self.citation_validity is not None else "N/A"
+        unsup = str(self.unsupported_claims) if self.unsupported_claims is not None else "N/A"
+        dup = f"{self.duplicate_rate:.0%}" if self.duplicate_rate is not None else "N/A"
+        rec = f"{self.change_recall:.0%}" if self.change_recall is not None else "N/A"
+        return f"| {label} | {cit} | {unsup} | {dup} | {rec} |"
 
 
 def run_eval(
@@ -154,11 +156,10 @@ def run_eval(
 
     NOTE on evaluation against the Milestone-0 fixture pack:
     evaluate_fixture_pack() scores citation_validity/unsupported_claims/
-    duplicate_rate against the fixture pack's real recorded digest, and
-    change_recall against _change_detection_case()'s separate, independently
-    -produced case -- NOT against tests/fixtures/contracts/change_sets.json,
-    which is not currently used as a gold reference here. The self-check
-    path (run_self_check) remains available as a plumbing test.
+    duplicate_rate against the fixture pack's real recorded digest (change_recall
+    is excluded, rendered as N/A). change_recall is scored separately via
+    evaluate_change_detection_case() as a dedicated synthetic smoke test.
+    The self-check path (run_self_check) remains available as a plumbing test.
     """
     return EvalResult(
         citation_validity=citation_validity(
@@ -178,7 +179,7 @@ _CD_ANTHROPIC_CLAUDE = Subject(company="Anthropic", product="Claude")
 
 
 def _cd_fact(field: str, value: str) -> ExtractedFact:
-    """One synthetic ExtractedFact for _change_detection_case() below --
+    """One synthetic ExtractedFact for evaluate_change_detection_case() below --
     a fresh snapshot_id/fact id per call, real ADR-0004-required evidence
     fields populated same as production LLM extraction would."""
     return ExtractedFact(
@@ -194,101 +195,113 @@ def _cd_fact(field: str, value: str) -> ExtractedFact:
     )
 
 
-def _change_detection_case() -> tuple[list[Change], list[Change]]:
-    """A small, genuinely independent (detected, expected) change pair for
-    change_recall -- replaces the earlier evaluate_fixture_pack() approach
-    review correctly rejected (2026-09-09): comparing change_sets[0] against
-    the flattened union of every change_sets.json entry (including
-    change_sets[0] itself) manufactures a score by construction, not a real
-    measurement -- see PR #99 review from both Patric-1613 and
-    chamath-wijayasundara.
+@dataclass(frozen=True)
+class ChangeDetectionFactInput:
+    """One fact observation input in the synthetic change-detection smoke test."""
 
-    Both sides are produced by the real, already-tested FactStore.update_fact()
-    -- never hand-constructed Change objects -- but from two SEPARATE
-    FactStore instances fed two DIFFERENT fact batches, not the same
-    collection sliced two ways:
+    subject: Subject
+    field: str
+    value: str
+    source_url: str
+    observed_at: datetime
+    in_detected: bool = True
 
-    - `gold_store` is fed every fact a correctly-running pipeline should have
-      extracted for this window: two subjects, each observed then changed.
-    - `detected_store` is fed only PART of that same window's facts --
-      deliberately missing the Anthropic Claude price update's second
-      observation, simulating a batch that missed one real change. This is
-      what makes change_recall provably below 1.0 by construction (1 of 2
-      expected changes detected == 50%), not a number that happens to fall
-      out of how fixture data was split.
 
-    Returns (detected_changes, expected_changes).
+DEFAULT_CHANGE_DETECTION_INPUTS: tuple[ChangeDetectionFactInput, ...] = (
+    ChangeDetectionFactInput(
+        subject=_CD_OPENAI_GPT4O,
+        field="context_window_tokens",
+        value="128000",
+        source_url="https://openai.example.com/gpt-4o-launch",
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+        in_detected=True,
+    ),
+    ChangeDetectionFactInput(
+        subject=_CD_OPENAI_GPT4O,
+        field="context_window_tokens",
+        value="256000",
+        source_url="https://openai.example.com/gpt-4o-256k",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        in_detected=True,
+    ),
+    ChangeDetectionFactInput(
+        subject=_CD_ANTHROPIC_CLAUDE,
+        field="input_price_usd",
+        value="3",
+        source_url="https://anthropic.example.com/pricing",
+        observed_at=datetime(2026, 7, 1, tzinfo=UTC),
+        in_detected=True,
+    ),
+    ChangeDetectionFactInput(
+        subject=_CD_ANTHROPIC_CLAUDE,
+        field="input_price_usd",
+        value="2",
+        source_url="https://anthropic.example.com/pricing-update",
+        observed_at=datetime(2026, 8, 15, tzinfo=UTC),
+        in_detected=False,
+    ),
+)
+
+
+def evaluate_change_detection_case(
+    inputs: Sequence[ChangeDetectionFactInput] | None = None,
+) -> EvalResult:
+    """Run the synthetic change-detection smoke test.
+
+    Replays a controlled sequence of fact observations into two FactStore
+    instances:
+    - gold_store receives all observations (producing expected_changes).
+    - detected_store receives only observations with in_detected=True (producing
+      detected_changes).
+
+    Scores change_recall in isolation and returns an EvalResult with citation/
+    duplicate metrics left as None (rendered as N/A in the results table).
     """
+    case_inputs = inputs if inputs is not None else DEFAULT_CHANGE_DETECTION_INPUTS
     gold_store = FactStore()
     expected_changes: list[Change] = []
     detected_store = FactStore()
     detected_changes: list[Change] = []
 
-    # OpenAI GPT-4o context window: 128000 -> 256000. Fed to BOTH stores --
-    # this is the change a correct pipeline run does detect.
-    for store, sink in ((gold_store, expected_changes), (detected_store, detected_changes)):
-        store.update_fact(
-            _CD_OPENAI_GPT4O,
-            _cd_fact("context_window_tokens", "128000"),
-            source_url="https://openai.example.com/gpt-4o-launch",
-            observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    for item in case_inputs:
+        fact = _cd_fact(item.field, item.value)
+        gold_change = gold_store.update_fact(
+            item.subject,
+            fact,
+            source_url=item.source_url,
+            observed_at=item.observed_at,
             change_set_id_factory=new_id,
             detected_at=_CD_DETECTED_AT,
         )
-        change = store.update_fact(
-            _CD_OPENAI_GPT4O,
-            _cd_fact("context_window_tokens", "256000"),
-            source_url="https://openai.example.com/gpt-4o-256k",
-            observed_at=datetime(2026, 8, 20, tzinfo=UTC),
-            change_set_id_factory=new_id,
-            detected_at=_CD_DETECTED_AT,
-        )
-        if change is None:
-            # Unreachable given the fixed literal values above (a real
-            # value change always produces a Change) -- explicit raise,
-            # not assert, matches this codebase's convention (bandit
-            # B101, strips under -O) elsewhere (see attributes.py).
-            raise RuntimeError("_change_detection_case(): expected a real Change, got None")
-        sink.append(change)
+        if gold_change is not None:
+            expected_changes.append(gold_change)
 
-    # Anthropic Claude input price: 3 -> 2. Fed ONLY to gold_store -- this is
-    # the change a correct pipeline run should have found but this simulated
-    # batch missed, keeping change_recall genuinely < 1.0.
-    gold_store.update_fact(
-        _CD_ANTHROPIC_CLAUDE,
-        _cd_fact("input_price_usd", "3"),
-        source_url="https://anthropic.example.com/pricing",
-        observed_at=datetime(2026, 7, 1, tzinfo=UTC),
-        change_set_id_factory=new_id,
-        detected_at=_CD_DETECTED_AT,
-    )
-    missed_change = gold_store.update_fact(
-        _CD_ANTHROPIC_CLAUDE,
-        _cd_fact("input_price_usd", "2"),
-        source_url="https://anthropic.example.com/pricing-update",
-        observed_at=datetime(2026, 8, 15, tzinfo=UTC),
-        change_set_id_factory=new_id,
-        detected_at=_CD_DETECTED_AT,
-    )
-    if missed_change is None:
-        raise RuntimeError("_change_detection_case(): expected a real Change, got None")
-    expected_changes.append(missed_change)
+        if item.in_detected:
+            det_change = detected_store.update_fact(
+                item.subject,
+                fact,
+                source_url=item.source_url,
+                observed_at=item.observed_at,
+                change_set_id_factory=new_id,
+                detected_at=_CD_DETECTED_AT,
+            )
+            if det_change is not None:
+                detected_changes.append(det_change)
 
-    return detected_changes, expected_changes
+    return EvalResult(
+        change_recall=change_recall(detected_changes, expected_changes),
+    )
 
 
 def evaluate_fixture_pack(loader: FixtureLoader | None = None) -> EvalResult:
     """Score the Milestone-0 fixture pack from tests/fixtures/contracts/.
 
-    citation_validity/unsupported_claims/duplicate_rate are scored against
-    the fixture pack's real recorded digest (digests[0]) and its real
-    snapshots -- no gold-reference issue here, these three only ever look at
-    one digest's own claims/citations.
+    Scores citation_validity, unsupported_claims, and duplicate_rate against
+    the fixture pack's real recorded digest (digests[0]) and snapshots.
 
-    change_recall is NOT scored against the fixture pack's change_sets.json
-    -- see _change_detection_case()'s docstring for why an earlier version
-    of this function that did was rejected in review. It's scored against
-    that separate, independently-produced (detected, expected) case instead.
+    Does NOT compute change_recall (left as None, rendered as N/A in the results
+    table), mirroring the precedent in evaluate_digest_run() (PR #97) of excluding
+    change_recall when no gold-reference changes exist for the digest run.
     """
     if loader is None:
         loader = FixtureLoader()
@@ -314,14 +327,15 @@ def evaluate_fixture_pack(loader: FixtureLoader | None = None) -> EvalResult:
     snapshot_resolver = InMemorySnapshotResolver({s.id: s for s in snapshots})
     digest = digests[0]
 
-    detected_changes, expected_changes = _change_detection_case()
-
-    return run_eval(
-        digest,
-        detected_changes,
-        expected_changes,
-        known_snapshot_ids,
-        snapshot_resolver=snapshot_resolver,
+    return EvalResult(
+        citation_validity=citation_validity(
+            digest, known_snapshot_ids, snapshot_resolver=snapshot_resolver
+        ),
+        unsupported_claims=unsupported_claim_count(
+            digest, known_snapshot_ids, snapshot_resolver=snapshot_resolver
+        ),
+        duplicate_rate=duplicate_rate(digest),
+        change_recall=None,
     )
 
 
@@ -359,36 +373,14 @@ def run_self_check(loader: FixtureLoader | None = None) -> EvalResult:
     )
 
 
-def main(argv: list[str] | None = None) -> None:
-    """`make eval` entrypoint.
-
-    By default, runs against the real Milestone-0 fixture pack
-    (tests/fixtures/contracts/), prints the result table, and appends a labeled,
-    timestamped row ("fixture-pack") to docs/eval_results.md.
-
-    Pass `--self-check` to run the plumbing self-check instead.
-    """
-    args = argv if argv is not None else sys.argv[1:]
-    is_self_check = "--self-check" in args
-
-    loader = FixtureLoader()
-    if is_self_check:
-        result = run_self_check(loader)
-        label = "self-check"
-    else:
-        result = evaluate_fixture_pack(loader)
-        label = "fixture-pack"
-
-    print("| Run | Citation validity | Unsupported claims | Duplicate rate | Change recall |")
-    print("|---|---|---|---|---|")
-    print(result.as_table_row(label))
-
+def _append_eval_row(label: str, result: EvalResult) -> None:
     timestamp = datetime.now(UTC).isoformat()
-    row = (
-        f"| {timestamp} | {label} | {result.citation_validity:.0%} | "
-        f"{result.unsupported_claims} | {result.duplicate_rate:.0%} | "
-        f"{result.change_recall:.0%} |\n"
-    )
+    cit = f"{result.citation_validity:.0%}" if result.citation_validity is not None else "N/A"
+    unsup = str(result.unsupported_claims) if result.unsupported_claims is not None else "N/A"
+    dup = f"{result.duplicate_rate:.0%}" if result.duplicate_rate is not None else "N/A"
+    rec = f"{result.change_recall:.0%}" if result.change_recall is not None else "N/A"
+    row = f"| {timestamp} | {label} | {cit} | {unsup} | {dup} | {rec} |\n"
+
     RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     is_new = not RESULTS_FILE.exists()
     with RESULTS_FILE.open("a", encoding="utf-8") as f:
@@ -405,6 +397,36 @@ def main(argv: list[str] | None = None) -> None:
             )
             f.write("|---|---|---|---|---|---|\n")
         f.write(row)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """`make eval` entrypoint.
+
+    By default, scores the real Milestone-0 fixture pack for citation/unsupported/
+    duplicate metrics and logs as "fixture-pack", then scores the synthetic
+    change-detection smoke test and logs as "change-detection-smoke-test".
+
+    Pass `--self-check` to run the plumbing self-check instead.
+    """
+    args = argv if argv is not None else sys.argv[1:]
+    is_self_check = "--self-check" in args
+
+    loader = FixtureLoader()
+    print("| Run | Citation validity | Unsupported claims | Duplicate rate | Change recall |")
+    print("|---|---|---|---|---|")
+
+    if is_self_check:
+        result = run_self_check(loader)
+        print(result.as_table_row("self-check"))
+        _append_eval_row("self-check", result)
+    else:
+        fp_result = evaluate_fixture_pack(loader)
+        print(fp_result.as_table_row("fixture-pack"))
+        _append_eval_row("fixture-pack", fp_result)
+
+        cd_result = evaluate_change_detection_case()
+        print(cd_result.as_table_row("change-detection-smoke-test"))
+        _append_eval_row("change-detection-smoke-test", cd_result)
 
 
 if __name__ == "__main__":

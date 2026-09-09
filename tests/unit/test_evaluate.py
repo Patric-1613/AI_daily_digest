@@ -6,21 +6,19 @@ import pytest
 
 from ai_daily_digest.intelligence.evaluate import (
     _CD_ANTHROPIC_CLAUDE,
-    _CD_DETECTED_AT,
     _CD_OPENAI_GPT4O,
+    DEFAULT_CHANGE_DETECTION_INPUTS,
     EvalResult,
-    _cd_fact,
     change_recall,
     citation_validity,
     duplicate_rate,
+    evaluate_change_detection_case,
     evaluate_fixture_pack,
     main,
     run_eval,
     run_self_check,
     unsupported_claim_count,
 )
-from ai_daily_digest.intelligence.facts import FactStore
-from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import (
     Change,
     Digest,
@@ -230,100 +228,71 @@ def test_main_fails_loudly_when_the_fixture_pack_has_no_digests(
         main()
 
 
-def test_evaluate_fixture_pack_produces_non_trivial_scores() -> None:
-    """Proves evaluate_fixture_pack() produces non-trivial (not blanket 100%)
-    scores, and that change_recall is a REAL, non-circular measurement.
-
-    citation_validity/unsupported_claims/duplicate_rate score the fixture
-    pack's real recorded digest (digests[0]) -- no gold-reference issue
-    there, these three only ever look at one digest's own claims.
-
-    change_recall scores _change_detection_case()'s independently-produced
-    detected vs. expected changes (see that function's docstring for why an
-    earlier version of this test, comparing change_sets[0] against
-    flatten(change_sets) -- the same file used as both prediction and
-    truth -- was rejected in review, 2026-09-09, by both Patric-1613 and
-    chamath-wijayasundara on PR #99). 1 of 2 independently-authored expected
-    changes is fed into the "detected" replay, so change_recall == 0.5 by
-    construction of two separate FactStore batches, not by how any one
-    shared file happens to be split.
+def test_evaluate_fixture_pack_scores_digest_metrics_without_change_recall() -> None:
+    """Proves evaluate_fixture_pack() scores citation_validity, unsupported_claims,
+    and duplicate_rate on the real fixture digest, with change_recall deliberately
+    excluded (None, rendered as N/A).
     """
     result = evaluate_fixture_pack()
     assert result.citation_validity == 1.0
     assert result.unsupported_claims == 0
     assert result.duplicate_rate == 0.0
+    assert result.change_recall is None
+    assert result.as_table_row("fixture-pack") == "| fixture-pack | 100% | 0 | 0% | N/A |"
+
+
+def test_evaluate_change_detection_case_scores_synthetic_smoke_test() -> None:
+    """Proves evaluate_change_detection_case() scores change_recall independently
+    without blending with fixture digest metrics.
+    """
+    result = evaluate_change_detection_case()
+    assert result.citation_validity is None
+    assert result.unsupported_claims is None
+    assert result.duplicate_rate is None
     assert result.change_recall == pytest.approx(0.5)
-    assert "50%" in result.as_table_row("fixture-pack")
+    assert (
+        result.as_table_row("change-detection-smoke-test")
+        == "| change-detection-smoke-test | N/A | N/A | N/A | 50% |"
+    )
 
 
 def test_change_detection_case_is_order_independent() -> None:
-    """Reordering which subject's fact-sequence is replayed first must not
-    change the resulting change_recall -- each (subject, field) timeline is
-    tracked independently by FactStore regardless of interleaving order.
-    This is exactly the class of bug review caught (a score that
-    accidentally depended on incidental ordering/structure of the input
-    rather than on genuine detection), proven not to recur here."""
-    forward_store = FactStore()
-    forward_store.update_fact(
-        _CD_OPENAI_GPT4O,
-        _cd_fact("context_window_tokens", "128000"),
-        source_url="https://openai.example.com/a",
-        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
-        change_set_id_factory=new_id,
-        detected_at=_CD_DETECTED_AT,
-    )
-    forward_openai_change = forward_store.update_fact(
-        _CD_OPENAI_GPT4O,
-        _cd_fact("context_window_tokens", "256000"),
-        source_url="https://openai.example.com/b",
-        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
-        change_set_id_factory=new_id,
-        detected_at=_CD_DETECTED_AT,
-    )
-    forward_store.update_fact(
-        _CD_ANTHROPIC_CLAUDE,
-        _cd_fact("input_price_usd", "3"),
-        source_url="https://anthropic.example.com/a",
-        observed_at=datetime(2026, 7, 1, tzinfo=UTC),
-        change_set_id_factory=new_id,
-        detected_at=_CD_DETECTED_AT,
-    )
+    """Reordering the sequence of fact observations fed to evaluate_change_detection_case()
+    must not alter the resulting change_recall score -- calls the actual function under test
+    with reordered inputs.
+    """
+    forward_result = evaluate_change_detection_case()
 
-    # Reversed order: Anthropic's fact-sequence replayed before OpenAI's.
-    reversed_store = FactStore()
-    reversed_store.update_fact(
-        _CD_ANTHROPIC_CLAUDE,
-        _cd_fact("input_price_usd", "3"),
-        source_url="https://anthropic.example.com/a",
-        observed_at=datetime(2026, 7, 1, tzinfo=UTC),
-        change_set_id_factory=new_id,
-        detected_at=_CD_DETECTED_AT,
-    )
-    reversed_store.update_fact(
-        _CD_OPENAI_GPT4O,
-        _cd_fact("context_window_tokens", "128000"),
-        source_url="https://openai.example.com/a",
-        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
-        change_set_id_factory=new_id,
-        detected_at=_CD_DETECTED_AT,
-    )
-    reversed_openai_change = reversed_store.update_fact(
-        _CD_OPENAI_GPT4O,
-        _cd_fact("context_window_tokens", "256000"),
-        source_url="https://openai.example.com/b",
-        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
-        change_set_id_factory=new_id,
-        detected_at=_CD_DETECTED_AT,
-    )
+    # Reorder inputs: Anthropic observations first, then OpenAI observations
+    anthropic_inputs = [
+        i for i in DEFAULT_CHANGE_DETECTION_INPUTS if i.subject == _CD_ANTHROPIC_CLAUDE
+    ]
+    openai_inputs = [i for i in DEFAULT_CHANGE_DETECTION_INPUTS if i.subject == _CD_OPENAI_GPT4O]
+    reordered_inputs = anthropic_inputs + openai_inputs
 
-    assert forward_openai_change is not None
-    assert reversed_openai_change is not None
+    reordered_result = evaluate_change_detection_case(reordered_inputs)
+    assert forward_result.change_recall == reordered_result.change_recall == pytest.approx(0.5)
 
-    expected = [forward_openai_change]  # only the OpenAI change is "expected" here
-    assert change_recall([forward_openai_change], expected) == change_recall(
-        [reversed_openai_change], expected
-    )
-    assert change_recall([forward_openai_change], expected) == 1.0
+
+def test_evaluate_fixture_pack_is_order_independent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves evaluate_fixture_pack produces identical metrics even if snapshots or items
+    in the fixture loader are loaded in reverse order.
+    """
+    from ai_daily_digest.intelligence.loaders import FixtureLoader
+
+    loader = FixtureLoader()
+    base_result = evaluate_fixture_pack(loader)
+
+    reversed_snapshots = list(reversed(loader.load_snapshots()))
+    reversed_items = list(reversed(loader.load_items()))
+
+    monkeypatch.setattr(FixtureLoader, "load_snapshots", lambda self: reversed_snapshots)
+    monkeypatch.setattr(FixtureLoader, "load_items", lambda self: reversed_items)
+    reversed_result = evaluate_fixture_pack(loader)
+
+    assert base_result.citation_validity == reversed_result.citation_validity
+    assert base_result.unsupported_claims == reversed_result.unsupported_claims
+    assert base_result.duplicate_rate == reversed_result.duplicate_rate
 
 
 def test_run_self_check_preserves_plumbing_check() -> None:
@@ -346,7 +315,9 @@ def test_main_runs_fixture_pack_by_default(monkeypatch: pytest.MonkeyPatch, tmp_
     assert test_results_file.exists()
     content = test_results_file.read_text(encoding="utf-8")
     assert "fixture-pack" in content
+    assert "change-detection-smoke-test" in content
     assert "50%" in content
+    assert "N/A" in content
 
 
 def test_main_supports_self_check_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -12,4 +12,5 @@ Every `make eval` run appends one row here — never edit or delete past rows, o
 | 2026-08-27T10:11:56.330872+00:00 | self-check | 100% | 0 | 0% | 100% |
 | 2026-08-28T13:05:05.116668+00:00 | self-check | 100% | 0 | 0% | 100% |
 | 2026-08-30T11:37:06.642157+00:00 | self-check | 100% | 0 | 0% | 100% |
-| 2026-09-09T14:36:25.439531+00:00 | fixture-pack | 100% | 0 | 0% | 50% |
+| 2026-09-09T17:42:31.631770+00:00 | fixture-pack | 100% | 0 | 0% | N/A |
+| 2026-09-09T17:42:31.631770+00:00 | change-detection-smoke-test | N/A | N/A | N/A | 50% |
