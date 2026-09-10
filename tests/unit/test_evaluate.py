@@ -1,15 +1,22 @@
 import uuid
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 
 from ai_daily_digest.intelligence.evaluate import (
+    _CD_ANTHROPIC_CLAUDE,
+    _CD_OPENAI_GPT4O,
+    DEFAULT_CHANGE_DETECTION_INPUTS,
     EvalResult,
     change_recall,
     citation_validity,
     duplicate_rate,
+    evaluate_change_detection_case,
+    evaluate_fixture_pack,
     main,
     run_eval,
+    run_self_check,
     unsupported_claim_count,
 )
 from ai_daily_digest.shared.schemas import (
@@ -219,3 +226,121 @@ def test_main_fails_loudly_when_the_fixture_pack_has_no_digests(
 
     with pytest.raises(RuntimeError, match=r"no digests.*digests\.json"):
         main()
+
+
+def test_evaluate_fixture_pack_scores_digest_metrics_without_change_recall() -> None:
+    """Proves evaluate_fixture_pack() scores citation_validity, unsupported_claims,
+    and duplicate_rate aggregated across all fixture digests, with change_recall deliberately
+    excluded (None, rendered as N/A).
+    """
+    result = evaluate_fixture_pack()
+    assert result.citation_validity == 0.5
+    assert result.unsupported_claims == 2
+    assert result.duplicate_rate == 0.0
+    assert result.change_recall is None
+    assert result.as_table_row("fixture-pack") == "| fixture-pack | 50% | 2 | 0% | N/A |"
+
+
+def test_evaluate_change_detection_case_scores_synthetic_smoke_test() -> None:
+    """Proves evaluate_change_detection_case() scores change_recall independently
+    without blending with fixture digest metrics.
+    """
+    result = evaluate_change_detection_case()
+    assert result.citation_validity is None
+    assert result.unsupported_claims is None
+    assert result.duplicate_rate is None
+    assert result.change_recall == pytest.approx(0.5)
+    assert (
+        result.as_table_row("change-detection-smoke-test")
+        == "| change-detection-smoke-test | N/A | N/A | N/A | 50% |"
+    )
+
+
+def test_change_detection_case_is_order_independent() -> None:
+    """Reordering the sequence of fact observations fed to evaluate_change_detection_case()
+    must not alter the resulting change_recall score -- calls the actual function under test
+    with reordered inputs.
+    """
+    forward_result = evaluate_change_detection_case()
+
+    # Reorder inputs: Anthropic observations first, then OpenAI observations
+    anthropic_inputs = [
+        i for i in DEFAULT_CHANGE_DETECTION_INPUTS if i.subject == _CD_ANTHROPIC_CLAUDE
+    ]
+    openai_inputs = [i for i in DEFAULT_CHANGE_DETECTION_INPUTS if i.subject == _CD_OPENAI_GPT4O]
+    reordered_inputs = anthropic_inputs + openai_inputs
+
+    reordered_result = evaluate_change_detection_case(reordered_inputs)
+    assert forward_result.change_recall == reordered_result.change_recall == pytest.approx(0.5)
+
+
+def test_evaluate_fixture_pack_is_order_independent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves evaluate_fixture_pack produces identical metrics even if snapshots, items,
+    or digests in the fixture loader are loaded in reverse order.
+    """
+    from ai_daily_digest.intelligence.loaders import FixtureLoader
+
+    loader = FixtureLoader()
+    base_result = evaluate_fixture_pack(loader)
+
+    reversed_snapshots = list(reversed(loader.load_snapshots()))
+    reversed_items = list(reversed(loader.load_items()))
+    reversed_digests = list(reversed(loader.load_digests()))
+
+    monkeypatch.setattr(FixtureLoader, "load_snapshots", lambda self: reversed_snapshots)
+    monkeypatch.setattr(FixtureLoader, "load_items", lambda self: reversed_items)
+    monkeypatch.setattr(FixtureLoader, "load_digests", lambda self: reversed_digests)
+    reversed_result = evaluate_fixture_pack(loader)
+
+    assert base_result.citation_validity == reversed_result.citation_validity
+    assert base_result.unsupported_claims == reversed_result.unsupported_claims
+    assert base_result.duplicate_rate == reversed_result.duplicate_rate
+
+
+def test_run_self_check_preserves_plumbing_check() -> None:
+    """The plumbing self-check path remains available and scores 100%."""
+    result = run_self_check()
+    assert result.citation_validity == 1.0
+    assert result.unsupported_claims == 0
+    assert result.duplicate_rate == 0.0
+    assert result.change_recall == 1.0
+    assert "100%" in result.as_table_row("self-check")
+
+
+def test_main_runs_fixture_pack_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """main() runs against fixture pack by default and logs to docs/eval_results.md."""
+    test_results_file = tmp_path / "eval_results.md"
+    monkeypatch.setattr("ai_daily_digest.intelligence.evaluate.RESULTS_FILE", test_results_file)
+
+    main([])
+
+    assert test_results_file.exists()
+    content = test_results_file.read_text(encoding="utf-8")
+    assert "fixture-pack" in content
+    assert "change-detection-smoke-test" in content
+    assert "50%" in content
+    assert "N/A" in content
+
+
+def test_main_supports_self_check_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """main(["--self-check"]) runs the plumbing self-check."""
+    test_results_file = tmp_path / "eval_results.md"
+    monkeypatch.setattr("ai_daily_digest.intelligence.evaluate.RESULTS_FILE", test_results_file)
+
+    main(["--self-check"])
+
+    assert test_results_file.exists()
+    content = test_results_file.read_text(encoding="utf-8")
+    assert "self-check" in content
+    assert "100%" in content
+
+
+def test_evaluate_fixture_pack_fails_when_input_batch_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """evaluate_fixture_pack raises when items or snapshots are missing."""
+    from ai_daily_digest.intelligence.loaders import FixtureLoader
+
+    monkeypatch.setattr(FixtureLoader, "load_items", lambda self: [])
+    with pytest.raises(RuntimeError, match=r"input batch is incomplete"):
+        evaluate_fixture_pack()
