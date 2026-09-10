@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import functools
 import hashlib
-import json
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -62,7 +61,7 @@ def _client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
-def call_structured[T: BaseModel](  # pylint: disable=too-many-arguments
+def call_structured[T: BaseModel](  # pylint: disable=too-many-arguments,too-many-branches
     # All keyword-only: model/system/prompt/response_model are the call
     # itself, max_tokens is provider-call tuning -- every LLM call site in
     # intelligence/ goes through this one function (see module docstring)
@@ -82,10 +81,35 @@ def call_structured[T: BaseModel](  # pylint: disable=too-many-arguments
     response_model: type[T],
     max_tokens: int = 2048,
 ) -> T:
-    """Call the model, parse its response as JSON, validate it against
-    `response_model`. On validation failure, retry once with the error
-    appended to the prompt. On a second failure, raise
-    StructuredCallFailedError — never return unvalidated data.
+    """Call the model via client.messages.parse(), validate the parsed output
+    against `response_model`. On failure (refusal, empty output, validation
+    error), retry once. On a second failure, raise StructuredCallFailedError
+    — never return unvalidated data.
+
+    Switched from client.messages.create() + manual json.loads() to
+    client.messages.parse(output_format=response_model) to eliminate the
+    class of JSONDecodeError failures observed in the Day-7 staging
+    rehearsal: any non-pure-JSON response (prose wrapper, markdown fence,
+    empty text) caused a hard crash rather than entering the retry loop.
+    client.messages.parse() handles JSON extraction internally and surfaces
+    the parsed Pydantic model directly via response.parsed_output.
+
+    Retry Policy & Error Ownership:
+      - Transport / Network Errors (RateLimitError, APIConnectionError, APIStatusError):
+        The Anthropic client handles transport-level retries internally with
+        exponential backoff and jitter (default max_retries=2). An error escaping
+        from client.messages.parse() indicates transport attempts are exhausted;
+        call_structured fails closed immediately without an extra wrapper retry
+        to prevent multiplying HTTP attempts.
+      - Content / Semantic Errors (ValidationError, refusal, empty parsed_output):
+        Handled by call_structured's 2-attempt loop. On attempt 0, a feedback
+        reminder is appended to the prompt before resending to the model.
+
+    Privacy & Exception Chaining:
+      - Terminal StructuredCallFailedError exceptions are raised `from None`
+        so that caller exception logging (e.g. logger.exception()) cannot
+        render underlying ValidationError.__str__() or provider payloads,
+        which could contain un-sanitized input text or scraped content.
 
     No `temperature` parameter: sampling controls (temperature/top_p/
     top_k) are removed on the current-generation models this file's
@@ -99,6 +123,8 @@ def call_structured[T: BaseModel](  # pylint: disable=too-many-arguments
     site's own grounding checks (extract_facts.py, compare_subjects.py,
     ...), not from a sampling knob.
     """
+    import anthropic as _anthropic  # pylint: disable=import-outside-toplevel
+
     client = _client()
 
     for attempt in range(2):
@@ -118,48 +144,133 @@ def call_structured[T: BaseModel](  # pylint: disable=too-many-arguments
             len(prompt),
             prompt_fingerprint,
         )
-        response = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw_text = "".join(block.text for block in response.content if block.type == "text")
-        try:
-            data = json.loads(raw_text)
-            return response_model.model_validate(data)
-        except (json.JSONDecodeError, ValidationError) as exc:
-            # Never log str(exc)/repr(exc) directly for a ValidationError:
-            # pydantic embeds each failing field's actual input_value
-            # verbatim in its default string form, which can include raw
-            # scraped article text flowing through from the model's own
-            # malformed response -- exactly what AGENTS.md's "never log
-            # raw prompts/content" rule exists to prevent (same reasoning
-            # as the prompt_fingerprint hash above, not the prompt
-            # itself). errors(include_input=False) gives the same
-            # type/location/message shape for debugging without the
-            # actual value. json.JSONDecodeError's default str() doesn't
-            # embed the source document, so it's logged as-is.
-            if isinstance(exc, ValidationError):
-                logger.warning(
-                    "llm_validation_failed attempt=%s error_type=%s errors=%s",
-                    attempt,
-                    type(exc).__name__,
-                    exc.errors(include_url=False, include_context=False, include_input=False),
-                )
-            else:
-                logger.warning(
-                    "llm_validation_failed attempt=%s error_type=%s error=%s",
-                    attempt,
-                    type(exc).__name__,
-                    exc,
-                )
-            prompt = (
-                f"{prompt}\n\n"
-                f"Your previous response failed validation with this error:\n{exc}\n"
-                f"Return ONLY valid JSON matching the required schema, nothing else."
-            )
 
+        # --- API call with per-error-type handling ---
+        try:
+            response = client.messages.parse(
+                model=model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": prompt}],
+                output_format=response_model,
+            )
+        except _anthropic.RateLimitError:
+            # 429 — Rate limit / quota burst. SDK internal retries with backoff
+            # and jitter are already exhausted; fail closed immediately.
+            logger.error(
+                "llm_api_error attempt=%s error_type=RateLimitError model=%s",
+                attempt,
+                model,
+            )
+            raise StructuredCallFailedError(
+                f"RateLimitError (rate limit exhausted) for {response_model.__name__}."
+            ) from None
+        except _anthropic.APIConnectionError:
+            # Network connection fault. SDK internal retries already exhausted;
+            # fail closed immediately.
+            logger.error(
+                "llm_api_error attempt=%s error_type=APIConnectionError model=%s",
+                attempt,
+                model,
+            )
+            raise StructuredCallFailedError(
+                f"APIConnectionError (network failure) for {response_model.__name__}."
+            ) from None
+        except _anthropic.APIStatusError as exc:
+            # HTTP status error (5xx server error or 4xx client error).
+            # 5xx errors were already retried internally by the SDK. Fail closed.
+            logger.error(
+                "llm_api_error attempt=%s error_type=APIStatusError status=%s model=%s",
+                attempt,
+                exc.status_code,
+                model,
+            )
+            raise StructuredCallFailedError(
+                f"APIStatusError {exc.status_code} for {response_model.__name__}."
+            ) from None
+        except ValidationError as exc:
+            # Under anthropic==1.3.0, messages.parse() calls TypeAdapter.validate_json()
+            # internally, raising ValidationError on invalid JSON or schema violations.
+            # Never log str(exc) directly: ValidationError.__str__() embeds invalid
+            # input values verbatim, which could leak scraped content or secrets into logs.
+            # Only sanitized error location/type metadata is safe.
+            safe_errors = [
+                {"loc": err.get("loc"), "type": err.get("type")}
+                for err in exc.errors(
+                    include_input=False,
+                    include_context=False,
+                    include_url=False,
+                )
+            ]
+            logger.warning(
+                "llm_validation_failed attempt=%s model=%s errors=%s",
+                attempt,
+                model,
+                safe_errors,
+            )
+            if attempt == 0:
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"Your previous response failed schema validation. "
+                    f"Return ONLY valid JSON matching the required schema, nothing else."
+                )
+                continue
+            raise StructuredCallFailedError(
+                f"Validation failed twice for {response_model.__name__}."
+            ) from None
+
+        # --- Refusal check (before trusting parsed_output) ---
+        if response.stop_reason == "refusal":
+            # Log only the category (a closed enum), never the explanation
+            # text -- stop_details.explanation is human-readable prose that
+            # the API docs note "is not guaranteed to be stable" and may
+            # echo prompt content in some refusal categories. Only the
+            # category is safe to log per AGENTS.md's "never log raw
+            # prompts/content" constraint.
+            category = (
+                response.stop_details.category if response.stop_details is not None else "unknown"
+            )
+            logger.warning(
+                "llm_refusal attempt=%s model=%s refusal_category=%s",
+                attempt,
+                model,
+                category,
+            )
+            if attempt == 0:
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"Your previous response was refused. "
+                    f"Return ONLY valid JSON matching the required schema, nothing else."
+                )
+                continue
+            raise StructuredCallFailedError(
+                f"Model refused twice for {response_model.__name__}."
+            ) from None
+
+        # --- Empty / None parsed_output ---
+        parsed = response.parsed_output
+        if parsed is None:
+            logger.warning(
+                "llm_empty_output attempt=%s model=%s",
+                attempt,
+                model,
+            )
+            if attempt == 0:
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"Your previous response produced no parseable output. "
+                    f"Return ONLY valid JSON matching the required schema, nothing else."
+                )
+                continue
+            raise StructuredCallFailedError(
+                f"Model produced no parseable output after 2 attempts "
+                f"for {response_model.__name__}."
+            ) from None
+
+        return parsed
+
+    # Unreachable in normal control flow (the loop always returns or raises),
+    # but keeps mypy and static analysis happy without a bare `return None`.
     raise StructuredCallFailedError(
         f"Model failed to produce valid {response_model.__name__} after 2 attempts."
-    )
+    ) from None
