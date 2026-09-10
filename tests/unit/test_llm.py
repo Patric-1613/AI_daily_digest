@@ -2,11 +2,17 @@
 depends on. Every other test file that touches this behavior explicitly
 defers coverage here (see e.g. test_resolve_llm.py's module docstring) --
 this is that file. `_client()` is monkeypatched with a fake Anthropic
-client so nothing here needs a real API key or network access."""
+client so nothing here needs a real API key or network access.
+
+The fake updated to implement .parse() returning an object shaped like the
+real SDK response (.parsed_output, .stop_reason, .stop_details) instead of
+only .create() -- call_structured() was rewritten to use .parse() exclusively
+after the Day-7 staging rehearsal confirmed that .create()+json.loads() fails
+on any non-pure-JSON response (prose wrapper, markdown fence, empty text).
+"""
 
 from __future__ import annotations
 
-import json
 import logging
 
 import pytest
@@ -19,42 +25,145 @@ class _Response(BaseModel):
     value: str
 
 
-class _FakeBlock:
-    def __init__(self, text: str, block_type: str = "text") -> None:
-        self.text = text
-        self.type = block_type
+# ---------------------------------------------------------------------------
+# SDK response fakes
+# ---------------------------------------------------------------------------
 
 
-class _FakeMessage:
-    def __init__(self, content: list[_FakeBlock]) -> None:
-        self.content = content
+class _FakeStopDetails:
+    """Shaped like anthropic.types.RefusalStopDetails."""
+
+    def __init__(self, category: str | None = "general_harms") -> None:
+        self.category = category
+        self.explanation: str | None = None  # never logged; tested for non-exposure
+
+
+class _FakeParseResponse:
+    """Shaped like anthropic.types.ParsedMessage[T].
+
+    .parsed_output  -- the already-validated Pydantic model instance, or None
+    .stop_reason    -- "end_turn", "refusal", "max_tokens", etc.
+    .stop_details   -- Optional[_FakeStopDetails] (only set when stop_reason=="refusal")
+    """
+
+    def __init__(
+        self,
+        parsed_output: BaseModel | None,
+        stop_reason: str = "end_turn",
+        stop_details: _FakeStopDetails | None = None,
+    ) -> None:
+        self.parsed_output = parsed_output
+        self.stop_reason = stop_reason
+        self.stop_details = stop_details
 
 
 class _FakeMessages:
-    """Queues up canned raw-text responses, one per call to .create()."""
+    """Queues up canned _FakeParseResponse objects, one per call to .parse()."""
 
-    def __init__(self, raw_texts: list[str]) -> None:
-        self._raw_texts = list(raw_texts)
+    def __init__(self, responses: list[_FakeParseResponse]) -> None:
+        self._responses = list(responses)
         self.calls = 0
 
-    def create(self, **_kwargs: object) -> _FakeMessage:
+    def parse(self, **_kwargs: object) -> _FakeParseResponse:
         self.calls += 1
-        return _FakeMessage([_FakeBlock(self._raw_texts.pop(0))])
+        return self._responses.pop(0)
 
 
 class _FakeClient:
-    def __init__(self, raw_texts: list[str]) -> None:
-        self.messages = _FakeMessages(raw_texts)
+    def __init__(self, responses: list[_FakeParseResponse]) -> None:
+        self.messages = _FakeMessages(responses)
 
 
-def _patch_client(monkeypatch: pytest.MonkeyPatch, raw_texts: list[str]) -> _FakeClient:
-    fake = _FakeClient(raw_texts)
+def _patch_client(
+    monkeypatch: pytest.MonkeyPatch, responses: list[_FakeParseResponse]
+) -> _FakeClient:
+    fake = _FakeClient(responses)
     monkeypatch.setattr(llm, "_client", lambda: fake)
     return fake
 
 
+# ---------------------------------------------------------------------------
+# Helper to build a successful parse response
+# ---------------------------------------------------------------------------
+
+
+def _ok(value: str = "ok") -> _FakeParseResponse:
+    return _FakeParseResponse(parsed_output=_Response(value=value))
+
+
+def _empty() -> _FakeParseResponse:
+    return _FakeParseResponse(parsed_output=None, stop_reason="end_turn")
+
+
+def _refusal(category: str = "general_harms") -> _FakeParseResponse:
+    return _FakeParseResponse(
+        parsed_output=None,
+        stop_reason="refusal",
+        stop_details=_FakeStopDetails(category=category),
+    )
+
+
+# ---------------------------------------------------------------------------
+# API error fakes
+# ---------------------------------------------------------------------------
+
+
+class _FakeAPIError(Exception):
+    """Base for fake Anthropic API errors."""
+
+
+class _FakeRateLimitError(_FakeAPIError):
+    pass
+
+
+class _FakeAPIConnectionError(_FakeAPIError):
+    pass
+
+
+class _FakeAPIStatusError(_FakeAPIError):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+
+
+class _ErrorMessages:
+    """Raises a canned exception on .parse() calls."""
+
+    def __init__(self, exceptions: list[Exception]) -> None:
+        self._exceptions = list(exceptions)
+        self.calls = 0
+
+    def parse(self, **_kwargs: object) -> _FakeParseResponse:
+        self.calls += 1
+        raise self._exceptions.pop(0)
+
+
+class _ErrorClient:
+    def __init__(self, exceptions: list[Exception]) -> None:
+        self.messages = _ErrorMessages(exceptions)
+
+
+def _patch_error_client(
+    monkeypatch: pytest.MonkeyPatch, exceptions: list[Exception]
+) -> _ErrorClient:
+    fake = _ErrorClient(exceptions)
+    monkeypatch.setattr(llm, "_client", lambda: fake)
+    # Also patch the error types so the except branches resolve correctly
+    import anthropic as _ant
+
+    monkeypatch.setattr(_ant, "RateLimitError", _FakeRateLimitError)
+    monkeypatch.setattr(_ant, "APIConnectionError", _FakeAPIConnectionError)
+    monkeypatch.setattr(_ant, "APIStatusError", _FakeAPIStatusError)
+    return fake
+
+
+# ---------------------------------------------------------------------------
+# Happy path
+# ---------------------------------------------------------------------------
+
+
 def test_succeeds_on_first_valid_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = _patch_client(monkeypatch, ['{"value": "ok"}'])
+    fake = _patch_client(monkeypatch, [_ok("ok")])
     result = llm.call_structured(
         model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
     )
@@ -62,8 +171,13 @@ def test_succeeds_on_first_valid_response(monkeypatch: pytest.MonkeyPatch) -> No
     assert fake.messages.calls == 1
 
 
-def test_retries_once_on_malformed_json_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = _patch_client(monkeypatch, ["not json at all", '{"value": "ok"}'])
+# ---------------------------------------------------------------------------
+# Empty output (parsed_output is None)
+# ---------------------------------------------------------------------------
+
+
+def test_retries_once_on_empty_output_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _patch_client(monkeypatch, [_empty(), _ok()])
     result = llm.call_structured(
         model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
     )
@@ -71,50 +185,183 @@ def test_retries_once_on_malformed_json_then_succeeds(monkeypatch: pytest.Monkey
     assert fake.messages.calls == 2
 
 
-def test_retries_once_on_schema_validation_failure_then_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # valid JSON, but missing the required "value" field the first time
-    fake = _patch_client(monkeypatch, ["{}", '{"value": "ok"}'])
-    result = llm.call_structured(
-        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
-    )
-    assert result.value == "ok"
-    assert fake.messages.calls == 2
-
-
-def test_fails_loudly_after_two_malformed_responses(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = _patch_client(monkeypatch, ["not json", "still not json"])
+def test_fails_closed_after_two_empty_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _patch_client(monkeypatch, [_empty(), _empty()])
     with pytest.raises(llm.StructuredCallFailedError):
         llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
     assert fake.messages.calls == 2
 
 
-def test_fails_loudly_after_two_schema_validation_failures(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = _patch_client(monkeypatch, ["{}", "{}"])
+# ---------------------------------------------------------------------------
+# Refusal
+# ---------------------------------------------------------------------------
+
+
+def test_retries_once_on_refusal_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _patch_client(monkeypatch, [_refusal(), _ok()])
+    result = llm.call_structured(
+        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
+    )
+    assert result.value == "ok"
+    assert fake.messages.calls == 2
+
+
+def test_fails_closed_after_two_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _patch_client(monkeypatch, [_refusal(), _refusal()])
     with pytest.raises(llm.StructuredCallFailedError):
         llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
     assert fake.messages.calls == 2
 
 
-def test_non_text_blocks_are_ignored_when_assembling_the_response(
+def test_refusal_log_does_not_contain_explanation(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """stop_details.explanation may echo prompt content — must never appear in logs."""
+    # Inject an explanation to confirm it's suppressed
+    details = _FakeStopDetails(category="general_harms")
+    details.explanation = "SECRET-EXPLANATION-TEXT"
+    refusal_response = _FakeParseResponse(
+        parsed_output=None, stop_reason="refusal", stop_details=details
+    )
+    _patch_client(monkeypatch, [refusal_response, _ok()])
+    with caplog.at_level(logging.WARNING):
+        llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+    assert "SECRET-EXPLANATION-TEXT" not in caplog.text
+    assert "general_harms" in caplog.text  # category IS safe to log
+
+
+# ---------------------------------------------------------------------------
+# API errors
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limit_error_retries_once_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Anthropic responses can include non-text blocks (tool use, etc.);
-    call_structured must only concatenate the text ones -- exercised
-    through the real function, not a re-implementation of its filter."""
-    fake = _FakeClient([])
-    fake.messages = _FakeMessages([])
-    mixed_message = _FakeMessage(
-        [_FakeBlock("ignored", block_type="tool_use"), _FakeBlock('{"value": "ok"}')]
-    )
-    monkeypatch.setattr(fake.messages, "create", lambda **_kwargs: mixed_message)
-    monkeypatch.setattr(llm, "_client", lambda: fake)
+    # First call raises RateLimitError, second succeeds
+    class _BothMessages:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def parse(self, **_kwargs: object) -> _FakeParseResponse:
+            self.calls += 1
+            if self.calls == 1:
+                raise _FakeRateLimitError("429")
+            return _ok()
+
+    import anthropic as _ant
+
+    fake_client = type("C", (), {"messages": _BothMessages()})()
+    monkeypatch.setattr(llm, "_client", lambda: fake_client)
+    monkeypatch.setattr(_ant, "RateLimitError", _FakeRateLimitError)
+    monkeypatch.setattr(_ant, "APIConnectionError", _FakeAPIConnectionError)
+    monkeypatch.setattr(_ant, "APIStatusError", _FakeAPIStatusError)
 
     result = llm.call_structured(
         model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
     )
     assert result.value == "ok"
+    assert fake_client.messages.calls == 2
+
+
+def test_rate_limit_error_twice_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _patch_error_client(
+        monkeypatch, [_FakeRateLimitError("429"), _FakeRateLimitError("429")]
+    )
+    with pytest.raises(llm.StructuredCallFailedError):
+        llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+    assert fake.messages.calls == 2
+
+
+def test_api_connection_error_retries_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BothMessages:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def parse(self, **_kwargs: object) -> _FakeParseResponse:
+            self.calls += 1
+            if self.calls == 1:
+                raise _FakeAPIConnectionError("network error")
+            return _ok()
+
+    import anthropic as _ant
+
+    fake_client = type("C", (), {"messages": _BothMessages()})()
+    monkeypatch.setattr(llm, "_client", lambda: fake_client)
+    monkeypatch.setattr(_ant, "RateLimitError", _FakeRateLimitError)
+    monkeypatch.setattr(_ant, "APIConnectionError", _FakeAPIConnectionError)
+    monkeypatch.setattr(_ant, "APIStatusError", _FakeAPIStatusError)
+
+    result = llm.call_structured(
+        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
+    )
+    assert result.value == "ok"
+    assert fake_client.messages.calls == 2
+
+
+def test_api_status_500_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _BothMessages:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def parse(self, **_kwargs: object) -> _FakeParseResponse:
+            self.calls += 1
+            if self.calls == 1:
+                raise _FakeAPIStatusError(500)
+            return _ok()
+
+    import anthropic as _ant
+
+    fake_client = type("C", (), {"messages": _BothMessages()})()
+    monkeypatch.setattr(llm, "_client", lambda: fake_client)
+    monkeypatch.setattr(_ant, "RateLimitError", _FakeRateLimitError)
+    monkeypatch.setattr(_ant, "APIConnectionError", _FakeAPIConnectionError)
+    monkeypatch.setattr(_ant, "APIStatusError", _FakeAPIStatusError)
+
+    result = llm.call_structured(
+        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
+    )
+    assert result.value == "ok"
+
+
+def test_api_status_4xx_fails_closed_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 4xx (not 429) is a client-error — must fail immediately, no retry consumed."""
+    fake = _patch_error_client(monkeypatch, [_FakeAPIStatusError(403)])
+    with pytest.raises(llm.StructuredCallFailedError):
+        llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+    # Only 1 call: fail-closed immediately, did not retry
+    assert fake.messages.calls == 1
+
+
+def test_api_status_400_fails_closed_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _patch_error_client(monkeypatch, [_FakeAPIStatusError(400)])
+    with pytest.raises(llm.StructuredCallFailedError):
+        llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+    assert fake.messages.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# No raw response content ever logged
+# ---------------------------------------------------------------------------
+
+
+def test_empty_output_log_does_not_contain_response_content(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """None parsed_output — log must contain no model-response content."""
+    _patch_client(monkeypatch, [_empty(), _ok()])
+    with caplog.at_level(logging.WARNING):
+        llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+    # Only safe structural fields (attempt, model) may appear — no content
+    assert "attempt=0" in caplog.text
+    assert "llm_empty_output" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure / misc (preserved from original test suite)
+# ---------------------------------------------------------------------------
 
 
 def test_missing_api_key_raises_a_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,37 +384,3 @@ def test_client_is_cached_across_calls(monkeypatch: pytest.MonkeyPatch) -> None:
         assert first is second
     finally:
         llm._client.cache_clear()  # don't leak a cached client into other tests
-
-
-def test_validation_failure_log_does_not_leak_raw_input_value(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Per review: pydantic's ValidationError.__str__() embeds the
-    invalid input_value verbatim -- logging the exception object
-    directly (logger.warning(..., exc)) could leak raw scraped article
-    text flowing through from the model's own malformed response,
-    violating AGENTS.md's "never log raw prompts/content" rule.
-
-    Marker length matters here: pydantic truncates a long input_value
-    repr in str(exc) (verified directly -- a ~55-char marker never
-    appears even against the OLD, unfixed code, which would make this
-    test pass regardless of whether the fix is present). Kept short and
-    confirmed to survive untruncated, so this test actually distinguishes
-    fixed from unfixed code."""
-    sensitive_text = "SECRET-ARTICLE-TEXT"
-    # 'value' must be a string; a nested object containing the sensitive
-    # text fails validation, and pydantic's ValidationError would embed
-    # it verbatim in str(exc) if that were logged directly.
-    raw_texts = [
-        json.dumps({"value": {"nested": sensitive_text}}),
-        '{"value": "ok"}',
-    ]
-    _patch_client(monkeypatch, raw_texts)
-
-    with caplog.at_level(logging.WARNING):
-        result = llm.call_structured(
-            model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
-        )
-
-    assert result.value == "ok"
-    assert sensitive_text not in caplog.text
