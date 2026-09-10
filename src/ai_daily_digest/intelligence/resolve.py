@@ -108,7 +108,9 @@ def resolve_deterministic(
     # then any alias-table-only subjects) in one O(n) pass, rather than
     # an `in` check against a growing list for every alias-table entry.
     all_subjects = list(dict.fromkeys([*known_subjects, *alias_index.keys()]))
-    haystack = normalise_name(f"{item.title} {item_text}")
+    haystack = normalise_name(
+        f"{item.title} {item.source_id.replace('_', ' ')} {item.publisher} {item_text}"
+    )
 
     matches: list[tuple[Subject, str]] = []
     for subject in all_subjects:
