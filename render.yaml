@@ -32,6 +32,36 @@ services:
         source: "/*"
         destination: /index.html
 
+  # Team-approved paid resource (issue #53): one Render cron service for the
+  # first live intelligence-pipeline rehearsal. Render bills cron services by
+  # runtime with a minimum of USD 1/month per service; the team approved that
+  # minimum. This runs the intelligence pipeline only -- ingestion plus
+  # intelligence orchestration is separate future work and must not be added
+  # here. See docs/DEPLOYMENT.md for approval, first-run steps, and exit codes.
+  - type: cron
+    name: ai-daily-digest-intelligence
+    runtime: python
+    plan: 0.5c-512mb
+    buildCommand: pip install uv && uv sync --locked --no-dev --no-editable
+    # Render cron schedules are always interpreted in UTC. "0 6 * * *" == 06:00 UTC daily.
+    schedule: "0 6 * * *"
+    # Run the already-built production console script directly. `uv run` is
+    # deliberately avoided: it can resynchronize the environment at runtime
+    # (potentially pulling dev/editable deps) on every paid cron execution.
+    startCommand: .venv/bin/generate-digest --since 24h --limit 5
+    envVars:
+      # Render's internal database reference -- the connection string is never
+      # written here, in tests, or in docs. generate-digest reads DATABASE_URL
+      # through shared.config.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-daily-digest-db
+          property: connectionString
+      # Entered only in the Render dashboard for this cron service. Never
+      # committed, printed, or logged.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
 databases:
   - name: ai-daily-digest-db
     plan: free
