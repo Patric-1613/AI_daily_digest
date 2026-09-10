@@ -308,114 +308,71 @@ def test_validation_error_log_does_not_leak_raw_input_or_str_exc(
     assert sensitive_text not in caplog.text
 
 
+def test_terminal_validation_error_logged_via_exception_does_not_leak_raw_input(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When call_structured raises a terminal StructuredCallFailedError after
+    exhausting retries, callers logging it with logger.exception() must NOT
+    render the underlying ValidationError with its embedded raw input_value."""
+    test_logger = logging.getLogger("test_caller")
+    sensitive_text = "SECRET-ARTICLE-TEXT-TERMINAL-54321"
+    error1 = _make_schema_invalid_error(sensitive_payload=sensitive_text)
+    error2 = _make_schema_invalid_error(sensitive_payload=sensitive_text)
+    _patch_client(monkeypatch, [error1, error2])
+
+    with caplog.at_level(logging.ERROR):
+        try:
+            llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+        except llm.StructuredCallFailedError as exc:
+            test_logger.exception("call_structured failed with terminal error", exc_info=exc)
+
+    assert "Validation failed twice" in caplog.text
+    assert sensitive_text not in caplog.text
+
+
 # ---------------------------------------------------------------------------
-# API errors
+# API errors (Transport retries owned by SDK; fail closed at wrapper level)
 # ---------------------------------------------------------------------------
 
 
-def test_rate_limit_error_retries_once_then_succeeds(
+def test_rate_limit_error_fails_closed_immediately(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # First call raises RateLimitError, second succeeds
-    class _BothMessages:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def parse(self, **_kwargs: object) -> _FakeParseResponse:
-            self.calls += 1
-            if self.calls == 1:
-                raise _FakeRateLimitError("429")
-            return _ok()
-
-    import anthropic as _ant
-
-    fake_client = type("C", (), {"messages": _BothMessages()})()
-    monkeypatch.setattr(llm, "_client", lambda: fake_client)
-    monkeypatch.setattr(_ant, "RateLimitError", _FakeRateLimitError)
-    monkeypatch.setattr(_ant, "APIConnectionError", _FakeAPIConnectionError)
-    monkeypatch.setattr(_ant, "APIStatusError", _FakeAPIStatusError)
-
-    result = llm.call_structured(
-        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
-    )
-    assert result.value == "ok"
-    assert fake_client.messages.calls == 2
-
-
-def test_rate_limit_error_twice_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = _patch_error_client(
-        monkeypatch, [_FakeRateLimitError("429"), _FakeRateLimitError("429")]
-    )
-    with pytest.raises(llm.StructuredCallFailedError):
+    fake = _patch_error_client(monkeypatch, [_FakeRateLimitError("429")])
+    with pytest.raises(llm.StructuredCallFailedError, match="RateLimitError"):
         llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
-    assert fake.messages.calls == 2
+    assert fake.messages.calls == 1
 
 
-def test_api_connection_error_retries_once_then_succeeds(
+def test_api_connection_error_fails_closed_immediately(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _BothMessages:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def parse(self, **_kwargs: object) -> _FakeParseResponse:
-            self.calls += 1
-            if self.calls == 1:
-                raise _FakeAPIConnectionError("network error")
-            return _ok()
-
-    import anthropic as _ant
-
-    fake_client = type("C", (), {"messages": _BothMessages()})()
-    monkeypatch.setattr(llm, "_client", lambda: fake_client)
-    monkeypatch.setattr(_ant, "RateLimitError", _FakeRateLimitError)
-    monkeypatch.setattr(_ant, "APIConnectionError", _FakeAPIConnectionError)
-    monkeypatch.setattr(_ant, "APIStatusError", _FakeAPIStatusError)
-
-    result = llm.call_structured(
-        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
-    )
-    assert result.value == "ok"
-    assert fake_client.messages.calls == 2
+    fake = _patch_error_client(monkeypatch, [_FakeAPIConnectionError("network error")])
+    with pytest.raises(llm.StructuredCallFailedError, match="APIConnectionError"):
+        llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+    assert fake.messages.calls == 1
 
 
-def test_api_status_500_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _BothMessages:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def parse(self, **_kwargs: object) -> _FakeParseResponse:
-            self.calls += 1
-            if self.calls == 1:
-                raise _FakeAPIStatusError(500)
-            return _ok()
-
-    import anthropic as _ant
-
-    fake_client = type("C", (), {"messages": _BothMessages()})()
-    monkeypatch.setattr(llm, "_client", lambda: fake_client)
-    monkeypatch.setattr(_ant, "RateLimitError", _FakeRateLimitError)
-    monkeypatch.setattr(_ant, "APIConnectionError", _FakeAPIConnectionError)
-    monkeypatch.setattr(_ant, "APIStatusError", _FakeAPIStatusError)
-
-    result = llm.call_structured(
-        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
-    )
-    assert result.value == "ok"
+def test_api_status_500_fails_closed_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _patch_error_client(monkeypatch, [_FakeAPIStatusError(500)])
+    with pytest.raises(llm.StructuredCallFailedError, match="APIStatusError 500"):
+        llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+    assert fake.messages.calls == 1
 
 
 def test_api_status_4xx_fails_closed_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     """A 4xx (not 429) is a client-error — must fail immediately, no retry consumed."""
     fake = _patch_error_client(monkeypatch, [_FakeAPIStatusError(403)])
-    with pytest.raises(llm.StructuredCallFailedError):
+    with pytest.raises(llm.StructuredCallFailedError, match="APIStatusError 403"):
         llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
-    # Only 1 call: fail-closed immediately, did not retry
     assert fake.messages.calls == 1
 
 
 def test_api_status_400_fails_closed_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _patch_error_client(monkeypatch, [_FakeAPIStatusError(400)])
-    with pytest.raises(llm.StructuredCallFailedError):
+    with pytest.raises(llm.StructuredCallFailedError, match="APIStatusError 400"):
         llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
     assert fake.messages.calls == 1
 
