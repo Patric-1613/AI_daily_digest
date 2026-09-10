@@ -3,7 +3,9 @@
 `generate-digest` (see `[project.scripts]`), or
 `python -m ai_daily_digest.intelligence.run`:
 
-1. parse CLI flags: `--digest-date` (defaults to current date in UTC),
+1. parse CLI flags: `--digest-date` (defaults to current date in UTC) or,
+   mutually exclusive with it, `--previous-complete-utc-day` (the last
+   fully elapsed UTC day -- what a 06:00 UTC cron should process);
    `--since` (defaults to a fixed lookback, e.g. 24h), optional `--limit`,
    and optional `--title`;
 2. resolve the half-open query window `[window_start, window_end)` without
@@ -87,6 +89,25 @@ _DAYS_RE = re.compile(r"^(\d+)\s*d(?:ays?)?$", re.IGNORECASE)
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def previous_complete_utc_day(now: datetime) -> date:
+    """Return the previous *completed* UTC calendar date relative to ``now``.
+
+    Pure and clock-injectable so callers (and tests) supply the reference
+    instant explicitly. ``now`` must be timezone-aware; it is converted to
+    UTC before the calendar date is taken, so a non-UTC aware value still
+    yields the correct UTC day. A naive datetime is rejected rather than
+    silently assumed to be UTC.
+
+    Example: ``now = 2026-09-10T06:00:00+00:00`` -> ``date(2026, 9, 9)``.
+    Paired with ``resolve_window(that_date, since="24h")`` this gives the
+    half-open window ``[2026-09-09T00:00Z, 2026-09-10T00:00Z)`` -- the last
+    fully elapsed UTC day at the time the cron fires.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("previous_complete_utc_day requires a timezone-aware datetime")
+    return now.astimezone(UTC).date() - timedelta(days=1)
 
 
 def _never_auto_publish_comparisons(digest: Digest, comparison_claim_ids: set[uuid.UUID]) -> Digest:
@@ -698,10 +719,21 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             "extract facts, detect changes, and publish an evidence-backed digest."
         ),
     )
-    parser.add_argument(
+    digest_date_selection = parser.add_mutually_exclusive_group()
+    digest_date_selection.add_argument(
         "--digest-date",
         default=None,
         help="Target date for the digest (YYYY-MM-DD); defaults to current UTC date",
+    )
+    digest_date_selection.add_argument(
+        "--previous-complete-utc-day",
+        action="store_true",
+        help=(
+            "Set the digest date to the previous completed UTC calendar date "
+            "(the last fully elapsed UTC day). Intended for a scheduled run such "
+            "as a 06:00 UTC cron so each execution processes a whole, already- "
+            "finished day. Mutually exclusive with --digest-date."
+        ),
     )
     parser.add_argument(
         "--since",
@@ -734,8 +766,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.digest_date:
             target_date = date.fromisoformat(args.digest_date)
+        elif args.previous_complete_utc_day:
+            target_date = previous_complete_utc_day(_utc_now())
         else:
-            target_date = datetime.now(UTC).date()
+            target_date = _utc_now().date()
         window_start, window_end = resolve_window(target_date, since=args.since)
     except (ValueError, TypeError) as exc:
         return _emit_failure(exc)

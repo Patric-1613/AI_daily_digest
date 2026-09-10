@@ -139,14 +139,37 @@ def test_intelligence_cron_runs_the_approved_rehearsal_command_on_a_utc_schedule
     assert cron["buildCommand"] == "pip install uv && uv sync --locked --no-dev --no-editable"
     # Run the already-built production console script from .venv directly -- never
     # `uv run`, which can resynchronize (and pull dev/editable deps) at runtime.
-    assert cron["startCommand"] == ".venv/bin/generate-digest --since 24h --limit 5"
+    # --previous-complete-utc-day makes the 06:00 UTC run process the last fully
+    # elapsed UTC day ([00:00, 24:00)), not just the hours since midnight.
+    assert cron["startCommand"] == (
+        ".venv/bin/generate-digest --previous-complete-utc-day --since 24h --limit 5"
+    )
     assert not cron["startCommand"].startswith("uv run")
-    # Digest date must default to the current UTC date -- never pinned here.
+    # The digest date is derived in Python, never pinned to a literal date here.
     assert "--digest-date" not in cron["startCommand"]
 
     # This foundation adds no pre-deploy hook and no attached disk.
     assert "preDeployCommand" not in cron
     assert "disk" not in cron
+
+
+def test_intelligence_cron_command_uses_no_shell_date_expression() -> None:
+    start_command = _service(_CRON_NAME)["startCommand"]
+
+    # The completed-day date comes from Python (previous_complete_utc_day with an
+    # injected clock), never a shell/platform date expression that would be
+    # unportable across the Render runtime.
+    for forbidden in ("$(", "${", "`", "date +", "date -u", "%Y", "%m", "%d", "yesterday"):
+        assert forbidden not in start_command, (
+            f"shell date expression {forbidden!r} in startCommand"
+        )
+    assert "--previous-complete-utc-day" in start_command
+
+    # No command substitution anywhere in the Blueprint's executable fields.
+    for service in _services():
+        for field in ("buildCommand", "startCommand"):
+            value = service.get(field, "")
+            assert "$(" not in value and "`" not in value
 
 
 def test_intelligence_cron_injects_database_by_reference_and_prompts_for_the_api_key() -> None:

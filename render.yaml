@@ -48,7 +48,18 @@ services:
     # Run the already-built production console script directly. `uv run` is
     # deliberately avoided: it can resynchronize the environment at runtime
     # (potentially pulling dev/editable deps) on every paid cron execution.
-    startCommand: .venv/bin/generate-digest --since 24h --limit 5
+    # --previous-complete-utc-day pins the digest date to the last fully
+    # elapsed UTC day, so the selection window is that whole day
+    # ([00:00, 24:00) UTC) rather than only the ~6 hours since midnight.
+    # Consecutive daily windows are contiguous: no temporal gap, no
+    # overlap. The digest date is derived in Python from an injected
+    # clock -- no shell `date` expression.
+    #
+    # --limit 5 is a deliberate cost control for this rehearsal: each run
+    # processes at most 5 snapshots from its window, so this is NOT
+    # complete production processing of every snapshot in the day. Raising
+    # or removing --limit is a separate, cost-approved change.
+    startCommand: .venv/bin/generate-digest --previous-complete-utc-day --since 24h --limit 5
     envVars:
       # Render's internal database reference -- the connection string is never
       # written here, in tests, or in docs. generate-digest reads DATABASE_URL
