@@ -1,6 +1,6 @@
 # 0013 — Subscription persistence lifecycle and retention
 
-Status: Proposed
+Status: Accepted by Person B (Sujin, 2026-09-10); authored by Person C
 Date: 2026-09-10
 Issue: [#94](https://github.com/Patric-1613/AI_daily_digest/issues/94)
 
@@ -51,7 +51,45 @@ Each subscription row contains at least:
 All timestamps are timezone-aware UTC. Database checks reject impossible state/timestamp
 combinations and `consent_generation < 1`.
 
-### 2. State machine
+### 2. Immutable consent-generation audit history
+
+The mutable `subscriptions` row is the current-state projection used to serialize concurrent
+requests and decide whether work is presently eligible. It is not the durable record of earlier
+generations. Delivery also owns an append-only `subscription_consent_events` table containing:
+
+- an internal UUID v7 `id`;
+- `subscription_id` with `ON DELETE RESTRICT`;
+- the positive `consent_generation`;
+- closed `event_type`: `consent_requested`, `confirmed`, `unsubscribed`, or `suppressed`;
+- server-generated, timezone-aware UTC `occurred_at`; and
+- `suppression_reason`, required only for a `suppressed` event and otherwise null.
+
+The table contains no email address or raw token. A unique constraint on
+`(subscription_id, consent_generation, event_type)` ensures that idempotent or concurrent requests
+cannot create duplicate lifecycle events. Database triggers reject updates, deletes, and truncation;
+corrections require a new explicitly typed event under a future ADR rather than rewriting history.
+
+Lifecycle events are written in the same database transaction as their current-state transition:
+
+- creation of a subscription or resubscription inserts `consent_requested` for the new generation;
+- first successful confirmation inserts `confirmed`;
+- first successful unsubscribe inserts `unsubscribed`; and
+- a trusted suppression transition inserts `suppressed` with its reason while revoking active
+  tokens and suppressing unsent delivery work.
+
+Repeated pending requests, confirmation replays, unsubscribe replays, and repeated suppression
+signals that make no state transition do not create another lifecycle event. The current
+`subscriptions` row keeps the latest generation, status, and convenient timestamps, while this
+event stream is authoritative for prior consent, confirmation, unsubscribe, and suppression
+history.
+
+Consent-event rows have no automatic time-based expiry in the MVP. They are retained for the life
+of the subscription record and are never selected by terminal-token or rate-limit cleanup. Because
+the foreign key uses `ON DELETE RESTRICT`, removing or anonymizing a subscription and its audit
+history requires a separately reviewed subscriber-data retention/deletion policy and migration;
+issue #94 must not invent or perform that deletion.
+
+### 3. State machine
 
 `status` is the closed set `pending`, `confirmed`, `unsubscribed`, and `suppressed`.
 `suppression_reason` is null unless status is `suppressed`; its initial closed set is
@@ -88,7 +126,7 @@ All subscription-request outcomes return the same response from the API contract
 confirmed, or suppressed addresses do not reveal their state and do not cause a token to appear in
 an HTTP response.
 
-### 3. Token persistence and lifecycle
+### 4. Token persistence and lifecycle
 
 The `subscription_tokens` table follows ADR 0012 exactly. It stores an internal UUID v7 ID,
 subscription ID with `ON DELETE RESTRICT`, closed purpose, unique SHA-256 token digest, key ID,
@@ -115,7 +153,7 @@ Repository operations use one database transaction per state change and row-leve
 constraints and locked re-reads make concurrent duplicate requests converge on one subscription
 row and one valid state transition. No transaction remains open across an email-provider call.
 
-### 4. Retention and cleanup
+### 5. Retention and cleanup
 
 Terminal token rows are retained for **90 days** before deletion:
 
@@ -136,7 +174,7 @@ Cleanup is a scheduled, idempotent database operation that deletes only rows alr
 eligible under these rules. Cleanup scheduling is not part of request handling and deletion never
 substitutes for first recording expiry, use, or revocation.
 
-### 5. HTTP and browser boundaries
+### 6. HTTP and browser boundaries
 
 The JSON API uses the three existing contract routes:
 
@@ -176,7 +214,7 @@ Requests remain credentialless. Malformed, expired, replayed where replay is not
 wrong-generation, and wrong-purpose tokens all fail with ADR 0012's standard privacy-safe error
 envelope.
 
-### 6. Rate limiting and privacy-safe observability
+### 7. Rate limiting and privacy-safe observability
 
 Rate-limit state is shared across processes and instances in a Delivery-owned PostgreSQL table.
 Each fixed-window counter is identified by `(scope, identity_digest, window_started_at)`, stores an
@@ -223,6 +261,8 @@ make no real provider or network calls.
 
 - Migration constraints and repository transitions can now be implemented without inventing
   lifecycle or retention policy.
+- Append-only consent events preserve every generation's lifecycle after the mutable current-state
+  projection advances and after terminal token rows are deleted.
 - Double opt-in, unsubscribe replay, resubscription generations, and administrative suppression
   have deterministic and concurrency-safe behavior.
 - Ninety-day terminal-token retention provides a bounded audit window while current-generation
