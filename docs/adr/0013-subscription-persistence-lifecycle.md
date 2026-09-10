@@ -16,6 +16,12 @@ This ADR completes that application-owned design. It does not select or configur
 provider, send email, change Render configuration, or introduce provider credentials. Those
 deployment concerns remain outside issue #94.
 
+ADR 0012 originally assigned exact browser routes and rate-limit values to the implementation PR.
+This ADR deliberately brings those policy decisions forward so the migration, repository, and
+public contract can be reviewed against one unambiguous lifecycle. The later implementation PR
+still owns the corresponding `API_CONTRACT.md`, OpenAPI, configuration, and executable-test
+changes; this ADR creates no placeholder routes or runtime configuration.
+
 ## Decision
 
 ### 1. Subscription identity and stored values
@@ -61,11 +67,15 @@ Allowed transitions are:
 | `confirmed` | repeated subscription request | remain `confirmed`; issue no confirmation token |
 | `confirmed` | valid unsubscribe token | become `unsubscribed` in the same generation |
 | `unsubscribed` | eligible subscription request | atomically increment generation and become `pending` |
-| any state | trusted administrative suppression event | become `suppressed` without changing generation |
+| any state | trusted suppression event | become `suppressed` without changing generation |
 | `suppressed` | any public subscription or token request | remain `suppressed` |
 
 No other transition is allowed. Public routes can never clear suppression. Clearing a suppression
 requires a future authenticated administrative workflow and is not part of issue #94.
+Trusted suppression events cover all three declared reasons: administrative action, hard bounce,
+and abuse complaint. Entering `suppressed` revokes every active subscription token and suppresses
+unsent delivery work atomically, regardless of which trusted adapter supplied the event. Provider
+webhooks and administrative endpoints remain out of scope.
 
 A repeated pending request may create another confirmation token for the same generation, as ADR
 0012 permits. It does not increment the generation. A resubscription lifecycle starts only when an
@@ -94,8 +104,12 @@ error.
 An unsubscribe token is issued only for a confirmed generation and has no time-based expiry in the
 MVP. Its first valid use atomically marks the subscription unsubscribed, records `used_at`, and
 suppresses unsent delivery work. Replaying that same successfully used token returns the same
-generic success without another state change. A token from an older generation, a token with the
-wrong purpose, or a revoked token cannot change subscription state.
+generic success without another state change. If several delivered messages contain different
+unsubscribe tokens for the same current generation, presenting any still-valid sibling after the
+subscription is already unsubscribed also returns generic success. The transaction records that
+presented token's first `used_at` but does not repeat or reverse the subscription transition and
+does not invalidate other current-generation unsubscribe links. A token from an older generation,
+a token with the wrong purpose, or a revoked token cannot change subscription state.
 
 Repository operations use one database transaction per state change and row-level locking. Unique
 constraints and locked re-reads make concurrent duplicate requests converge on one subscription
@@ -106,8 +120,9 @@ row and one valid state transition. No transaction remains open across an email-
 Terminal token rows are retained for **90 days** before deletion:
 
 - an expired confirmation token becomes eligible 90 days after `expires_at`;
-- a used token becomes eligible 90 days after `used_at`, unless the active-unsubscribe rule below
-  keeps it longer;
+- a used confirmation token becomes eligible 90 days after `used_at`;
+- a used unsubscribe token becomes eligible 90 days after `used_at`, unless the
+  current-generation unsubscribe rule below keeps it longer;
 - a revoked token becomes eligible 90 days after `revoked_at`; and
 - when more than one terminal timestamp exists, cleanup uses the latest timestamp.
 
@@ -140,12 +155,21 @@ requires an explicit user action before making a credentialless JSON POST to the
 route. GET requests never mutate subscription state. Token pages send `Cache-Control: no-store`
 and `Referrer-Policy: no-referrer`.
 
-RFC 8058 one-click unsubscribe uses
+RFC 8058 requires a token-bearing HTTPS request target because mailbox providers add only the
+standard `List-Unsubscribe=One-Click` form value; they cannot be required to copy a bearer token
+from a fragment into a header or body. Application route-template logging alone cannot prevent a
+hosting platform from retaining that request target. The RFC 8058 endpoint is therefore disabled
+and absent from OpenAPI by default. It must not be deployed or advertised until issue #53 verifies
+and documents an end-to-end mechanism that prevents Render, reverse-proxy, application,
+observability, and analytics logs from retaining the concrete token-bearing request target.
+
+After that evidence is reviewed, the implementation PR may enable
 `POST /v1/subscriptions/unsubscribe/one-click/{token}`. It accepts only
 `application/x-www-form-urlencoded` with the exact field
-`List-Unsubscribe=One-Click`, requires no browser `Origin`, and is idempotent. Application access
-logs record only the route template, never the concrete path or raw request target. This endpoint
-is application behavior only; provider capability validation remains outside issue #94.
+`List-Unsubscribe=One-Click`, requires no browser `Origin`, and follows the same current-generation
+idempotency rules as JSON unsubscribe. Enabling it also requires a regression test proving that
+application access logs contain only the route template. Provider capability and platform-log
+verification remain issue #53 responsibilities.
 
 Browser JSON POST requests require an `Origin` exactly matching the configured frontend origin.
 Requests remain credentialless. Malformed, expired, replayed where replay is not allowed,
@@ -154,19 +178,42 @@ envelope.
 
 ### 6. Rate limiting and privacy-safe observability
 
-The application enforces independent limits before expensive token or database work:
+Rate-limit state is shared across processes and instances in a Delivery-owned PostgreSQL table.
+Each fixed-window counter is identified by `(scope, identity_digest, window_started_at)`, stores an
+integer request count and `expires_at`, and has a unique constraint on that identity tuple. A
+request consumes capacity with one atomic `INSERT ... ON CONFLICT ... DO UPDATE` operation that
+increments and returns the counter. A transaction permits work only when the returned count is at
+or below the configured threshold. Counter cleanup is an idempotent deletion of rows whose
+`expires_at` is in the past; counters expire 24 hours after their window closes.
+
+The application enforces these independent limits:
 
 - subscription initiation: at most 3 requests per normalized-address HMAC key per hour and 20
   requests per network HMAC key per hour;
 - confirmation and unsubscribe token endpoints: at most 30 attempts per network HMAC key per 10
   minutes; and
-- RFC 8058 one-click requests use the unsubscribe-token endpoint limit.
+- if RFC 8058 is later enabled, at most 10 requests per token digest per 10 minutes.
 
-Limit counters expire 24 hours after their window closes. HMAC keys are purpose-separated from
-subscription token signing keys and provided only through secret configuration. Raw addresses,
-network values, request bodies, token values, query strings, full URLs, secrets, and database URLs
-are never logged or stored in limit records. Exceeding a limit returns the standard error envelope
-with HTTP 429 and a generic message that does not disclose subscription state.
+RFC 8058 does not use the 30-per-network browser limit. Mailbox providers legitimately originate
+requests for many recipients from shared infrastructure, so a small network ceiling would block
+valid unsubscribes. The token is bounded and its SHA-256 digest can be calculated without storing
+the raw value; the token-specific counter confines replay to one bearer capability. General
+service-level denial-of-service controls remain independent of subscription state and must not
+make a valid unsubscribe depend on a shared mailbox-provider network identity.
+
+Address and network identities use separate keyed HMAC purposes. Their keys are separate from
+subscription-token signing keys and provided only through secret configuration. The application
+never parses or trusts client-supplied `Forwarded` or `X-Forwarded-For` headers. It derives the
+client address only from the ASGI connection scope after the server's proxy middleware has accepted
+forwarding metadata from an explicit deployment-controlled trusted-proxy allowlist. With no valid
+trusted-proxy configuration, the connection peer is used and forwarded headers are ignored;
+production must not use a wildcard trusted-proxy setting. The network identity masks validated IP
+addresses to IPv4 `/24` or IPv6 `/56` before applying the purpose-specific HMAC.
+
+Raw addresses, network values, request bodies, token values, query strings, full URLs, secrets,
+and database URLs are never logged or stored in limit records. Exceeding a limit returns the
+standard error envelope with HTTP 429 and a generic message that does not disclose subscription
+state.
 
 Logs may include request ID, route template, a coarse outcome category, and an anonymized internal
 subscription identifier. Tests use deterministic clocks, token sources, and rate-limit fakes and
@@ -182,10 +229,11 @@ make no real provider or network calls.
   unsubscribe links continue to work.
 - Fragment-based browser links avoid sending raw tokens in GET requests, but require a small
   frontend handoff page.
-- RFC 8058 requires a token-bearing request path. Access logging must therefore use route templates
-  and must never retain concrete request targets.
-- Database-backed cross-process rate limiting may add persistence work; an in-process-only limiter
-  is insufficient for a multi-instance deployment.
+- RFC 8058 remains unavailable until the deployed request path is proven absent from every logging
+  layer. This preserves ADR 0012's no-raw-token logging guarantee at the cost of delaying one-click
+  support.
+- Cross-process rate limiting adds a Delivery-owned PostgreSQL table and cleanup operation; an
+  in-process-only limiter is insufficient for a multi-instance deployment.
 - Provider delivery, Render configuration, real email, authenticated suppression administration,
   and subscriber-data deletion policy remain separate decisions and work items.
 
