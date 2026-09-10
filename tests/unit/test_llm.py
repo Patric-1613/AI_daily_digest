@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from ai_daily_digest.intelligence import llm
 
@@ -58,24 +58,28 @@ class _FakeParseResponse:
 
 
 class _FakeMessages:
-    """Queues up canned _FakeParseResponse objects, one per call to .parse()."""
+    """Queues up canned _FakeParseResponse or Exception objects, one per call to .parse()."""
 
-    def __init__(self, responses: list[_FakeParseResponse]) -> None:
+    def __init__(self, responses: list[_FakeParseResponse | Exception]) -> None:
         self._responses = list(responses)
         self.calls = 0
 
     def parse(self, **_kwargs: object) -> _FakeParseResponse:
         self.calls += 1
-        return self._responses.pop(0)
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 class _FakeClient:
-    def __init__(self, responses: list[_FakeParseResponse]) -> None:
+    def __init__(self, responses: list[_FakeParseResponse | Exception]) -> None:
         self.messages = _FakeMessages(responses)
 
 
 def _patch_client(
-    monkeypatch: pytest.MonkeyPatch, responses: list[_FakeParseResponse]
+    monkeypatch: pytest.MonkeyPatch,
+    responses: list[_FakeParseResponse | Exception],
 ) -> _FakeClient:
     fake = _FakeClient(responses)
     monkeypatch.setattr(llm, "_client", lambda: fake)
@@ -228,6 +232,80 @@ def test_refusal_log_does_not_contain_explanation(
         llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
     assert "SECRET-EXPLANATION-TEXT" not in caplog.text
     assert "general_harms" in caplog.text  # category IS safe to log
+
+
+# ---------------------------------------------------------------------------
+# Pydantic validation errors (ValidationError raised by messages.parse())
+# ---------------------------------------------------------------------------
+
+
+def _make_json_invalid_error() -> ValidationError:
+    try:
+        TypeAdapter(_Response).validate_json("not valid json at all {")
+    except ValidationError as err:
+        return err
+    raise AssertionError("unreachable")
+
+
+def _make_schema_invalid_error(sensitive_payload: str = "") -> ValidationError:
+    try:
+        TypeAdapter(_Response).validate_json(f'{{"wrong_key": "{sensitive_payload}"}}')
+    except ValidationError as err:
+        return err
+    raise AssertionError("unreachable")
+
+
+def test_validation_error_json_invalid_retries_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When messages.parse() raises a JSON-invalid ValidationError on attempt 1,
+    call_structured retries once with the feedback prompt and succeeds on attempt 2."""
+    fake = _patch_client(monkeypatch, [_make_json_invalid_error(), _ok("recovered")])
+    result = llm.call_structured(
+        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
+    )
+    assert result.value == "recovered"
+    assert fake.messages.calls == 2
+
+
+def test_validation_error_schema_invalid_retries_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When messages.parse() raises a schema ValidationError on attempt 1,
+    call_structured retries once and succeeds on attempt 2."""
+    fake = _patch_client(monkeypatch, [_make_schema_invalid_error(), _ok("recovered")])
+    result = llm.call_structured(
+        model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
+    )
+    assert result.value == "recovered"
+    assert fake.messages.calls == 2
+
+
+def test_validation_error_twice_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two consecutive ValidationErrors from messages.parse() fail closed."""
+    fake = _patch_client(monkeypatch, [_make_schema_invalid_error(), _make_schema_invalid_error()])
+    with pytest.raises(llm.StructuredCallFailedError, match="Validation failed twice"):
+        llm.call_structured(model=llm.HAIKU, system="sys", prompt="p", response_model=_Response)
+    assert fake.messages.calls == 2
+
+
+def test_validation_error_log_does_not_leak_raw_input_or_str_exc(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Per security review: ValidationError.__str__() embeds raw invalid inputs verbatim.
+    call_structured must log only sanitized errors without str(exc) or invalid inputs."""
+    sensitive_text = "SECRET-ARTICLE-TEXT-12345"
+    error = _make_schema_invalid_error(sensitive_payload=sensitive_text)
+    _patch_client(monkeypatch, [error, _ok()])
+
+    with caplog.at_level(logging.WARNING):
+        result = llm.call_structured(
+            model=llm.HAIKU, system="sys", prompt="p", response_model=_Response
+        )
+
+    assert result.value == "ok"
+    assert "llm_validation_failed" in caplog.text
+    assert sensitive_text not in caplog.text
 
 
 # ---------------------------------------------------------------------------

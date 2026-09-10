@@ -16,7 +16,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
     # Only for the _client() return-type annotation below -- the runtime
@@ -207,6 +207,36 @@ def call_structured[T: BaseModel](  # pylint: disable=too-many-arguments,too-man
             )
             raise StructuredCallFailedError(
                 f"APIStatusError {exc.status_code} (client error) for {response_model.__name__}."
+            ) from exc
+        except ValidationError as exc:
+            # Under anthropic==1.3.0, messages.parse() calls TypeAdapter.validate_json()
+            # internally, raising ValidationError on invalid JSON or schema violations.
+            # Never log str(exc) directly: ValidationError.__str__() embeds invalid
+            # input values verbatim, which could leak scraped content or secrets into logs.
+            # Only sanitized error location/type metadata is safe.
+            safe_errors = [
+                {"loc": err.get("loc"), "type": err.get("type")}
+                for err in exc.errors(
+                    include_input=False,
+                    include_context=False,
+                    include_url=False,
+                )
+            ]
+            logger.warning(
+                "llm_validation_failed attempt=%s model=%s errors=%s",
+                attempt,
+                model,
+                safe_errors,
+            )
+            if attempt == 0:
+                prompt = (
+                    f"{prompt}\n\n"
+                    f"Your previous response failed schema validation. "
+                    f"Return ONLY valid JSON matching the required schema, nothing else."
+                )
+                continue
+            raise StructuredCallFailedError(
+                f"Validation failed twice for {response_model.__name__}."
             ) from exc
 
         # --- Refusal check (before trusting parsed_output) ---
