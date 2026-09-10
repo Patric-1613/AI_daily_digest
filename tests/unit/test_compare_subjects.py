@@ -31,7 +31,7 @@ from ai_daily_digest.shared.schemas import (
     ExtractionMethod,
     Subject,
 )
-from tests.uuid_samples import FACT_1, SNAPSHOT_1
+from tests.uuid_samples import FACT_1, SNAPSHOT_1, SNAPSHOT_2
 
 TCS_DETECTED_AT = datetime(
     2026, 8, 20, 12, 0, 0, 250000, tzinfo=UTC
@@ -315,9 +315,10 @@ def test_swapped_attribution_is_now_structurally_impossible() -> None:
 
 def test_field_with_no_registered_comparison_rule_is_rejected() -> None:
     """benchmark_scores is a real COMPARABLE_FIELDS entry and is present
-    in the table, but Phase 1 (ADR 0005 point 2) registers no
-    ComparisonRule for it -- excluded from comparison entirely, not
-    guessed at."""
+    in the table, but ADR 0005 point 2 registers no ComparisonRule for
+    it (price fields are also deliberately unregistered pending the basis
+    ADR -- benchmark_scores needs its own representation designed first) --
+    excluded from comparison entirely, not guessed at."""
 
     def fake_call(system: str, prompt: str) -> ComparisonResponse:
         return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "benchmark_scores")
@@ -578,3 +579,100 @@ def test_sparse_table_yields_abstention_not_a_fabricated_claim() -> None:
 
     empty_rows = [FactRow(subject=OPENAI_GPT4O, field="context_window_tokens")]
     assert compare_subjects(empty_rows, call_fn=fake_call) == []
+
+
+# --- Price fields (input_price_usd/output_price_usd) are unregistered --
+# PriceComparisonRule exists and is unit-tested (test_attributes.py) but
+# is deliberately NOT in COMPARISON_RULES yet -- ADR 0005 point (f)
+# requires a currency/unit/basis design (e.g. reconciling per-token vs.
+# per-million-tokens pricing) to be accepted before price comparison is
+# enabled (review, 2026-09-09). Until then, both fields are rejected the
+# same way any other unregistered field is -- these tests prove that,
+# rather than proving price comparisons succeed. ---
+
+
+def test_input_price_comparison_is_rejected_pending_basis_design() -> None:
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("input_price_usd", "5", SNAPSHOT_1),
+        source_url="https://openai.com/pricing",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TCS_DETECTED_AT,
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _fact("input_price_usd", "3", SNAPSHOT_2, fact_id=TCMP_FACT_2),
+        source_url="https://anthropic.com/pricing",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TCS_DETECTED_AT,
+    )
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["input_price_usd"])
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "input_price_usd")
+
+    assert compare_subjects(rows, call_fn=fake_call) == []
+
+
+def test_output_price_comparison_is_rejected_pending_basis_design() -> None:
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("output_price_usd", "$15.00", SNAPSHOT_1),
+        source_url="https://openai.com/pricing",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TCS_DETECTED_AT,
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _fact("output_price_usd", "1,200.50", SNAPSHOT_2, fact_id=TCMP_FACT_2),
+        source_url="https://anthropic.com/pricing",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TCS_DETECTED_AT,
+    )
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["output_price_usd"])
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "output_price_usd")
+
+    assert compare_subjects(rows, call_fn=fake_call) == []
+
+
+def test_price_field_rejection_logs_field_not_comparable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same rejection path and reason as any other unregistered field
+    (test_field_with_no_registered_comparison_rule_is_rejected above) --
+    a price candidate is dropped, not crashed on, and the log says why."""
+    store = FactStore()
+    store.update_fact(
+        OPENAI_GPT4O,
+        _fact("input_price_usd", "5", SNAPSHOT_1),
+        source_url="https://openai.com/pricing",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TCS_DETECTED_AT,
+    )
+    store.update_fact(
+        ANTHROPIC_CLAUDE,
+        _fact("input_price_usd", "3", SNAPSHOT_2, fact_id=TCMP_FACT_2),
+        source_url="https://anthropic.com/pricing",
+        observed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        change_set_id_factory=lambda: uuid.uuid4(),
+        detected_at=TCS_DETECTED_AT,
+    )
+    rows = build_fact_table(store, [OPENAI_GPT4O, ANTHROPIC_CLAUDE], ["input_price_usd"])
+
+    def fake_call(system: str, prompt: str) -> ComparisonResponse:
+        return _one_assertion_response(OPENAI_GPT4O, ANTHROPIC_CLAUDE, "input_price_usd")
+
+    with caplog.at_level(logging.WARNING):
+        claims = compare_subjects(rows, call_fn=fake_call)
+
+    assert claims == []
+    assert "reason=field_not_comparable" in caplog.text

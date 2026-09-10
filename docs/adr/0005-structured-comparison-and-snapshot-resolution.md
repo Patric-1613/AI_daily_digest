@@ -142,5 +142,31 @@ explicitly separated **design acceptance** from **implementation scope for PR #5
 - Further work on this design happens through the follow-up issue/ADR process, not by continuing to
   expand PR #5.
 
-This ADR still requires Person C's review before being considered fully accepted by the team, per
-the team's contract-change process (`docs/API_CONTRACT.md`).
+## Phase 2: price comparison rules — implemented, then unregistered pending basis design (2026-09-02, revised 2026-09-09)
+
+Point 2's Phase 1 scope (`context_window_tokens` only) was extended to
+`input_price_usd`/`output_price_usd` on 2026-09-02, per direct review instruction — implemented
+ahead of a dedicated follow-up ADR for price representation, which point (f) originally anticipated
+each comparable field would get.
+
+Review on 2026-09-09 found this insufficient: disclosing the basis-mismatch risk (below) is not the
+same as satisfying point (f)'s requirement that each field's currency/unit/basis representation be
+*designed and accepted* before it's enabled. Accordingly, both fields were reverted to
+**unregistered**:
+
+- `shared/attributes.py::PriceComparisonRule` — a plain USD numeric string (optional leading `$`,
+  thousands separators tolerated, mirroring the formatting tolerance `grounding.py`'s own
+  number-matching already extends to a disclosed value elsewhere in this codebase; parses via
+  `Decimal`, not `float`, and validates against a strict pattern rejecting negative values,
+  scientific notation, underscores, and repeated `$` signs). The class exists and is unit-tested,
+  but is **NOT** registered in `COMPARISON_RULES` — register it once a follow-up ADR accepts a
+  currency/unit/basis design for prices.
+- **The unresolved problem**: currency conversion, and reconciling a basis mismatch (e.g. one side
+  priced per-token, the other per-million-tokens) — this rule trusts the stored value's basis is
+  already consistent for a given field across every subject being compared, the same trust
+  `IntegerComparisonRule` already places in `context_window_tokens` always meaning the same unit.
+  Getting this wrong would silently render a numerically-correct-looking but semantically-wrong
+  comparison. Needs its own explicit design pass (a dedicated ADR) before these fields are
+  registered for real production comparison.
+- `benchmark_scores`, `availability_regions`, `licence_terms`, `modalities` remain excluded from
+  comparison, unaffected by this round.
