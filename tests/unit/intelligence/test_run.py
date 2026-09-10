@@ -7,7 +7,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,6 +25,7 @@ from ai_daily_digest.intelligence.run import (
     evaluate_digest_run,
     exit_code_for,
     main,
+    previous_complete_utc_day,
     render_report,
     resolve_window,
     run_pipeline,
@@ -93,6 +94,7 @@ def test_resolve_window_rejects_inverted_range() -> None:
 def test_parse_args_defaults() -> None:
     args = _parse_args([])
     assert args.digest_date is None
+    assert args.previous_complete_utc_day is False
     assert args.since == "24h"
     assert args.limit is None
     assert args.title is None
@@ -112,9 +114,143 @@ def test_parse_args_explicit() -> None:
         ]
     )
     assert args.digest_date == "2026-09-04"
+    assert args.previous_complete_utc_day is False
     assert args.since == "12h"
     assert args.limit == 10
     assert args.title == "Custom Title"
+
+
+def test_parse_args_previous_complete_utc_day_flag() -> None:
+    args = _parse_args(["--previous-complete-utc-day"])
+    assert args.previous_complete_utc_day is True
+    assert args.digest_date is None
+
+
+def test_parse_args_rejects_digest_date_and_previous_complete_utc_day_together() -> None:
+    with pytest.raises(SystemExit):
+        _parse_args(["--digest-date", "2026-09-09", "--previous-complete-utc-day"])
+
+
+def test_previous_complete_utc_day_at_0600_utc_selects_prior_calendar_day() -> None:
+    execution_time = datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC)
+    assert previous_complete_utc_day(execution_time) == date(2026, 9, 9)
+
+
+def test_previous_complete_utc_day_window_is_the_exact_prior_utc_day() -> None:
+    execution_time = datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC)
+    digest_date = previous_complete_utc_day(execution_time)
+    window_start, window_end = resolve_window(digest_date, since="24h")
+
+    assert window_start == datetime(2026, 9, 9, 0, 0, 0, tzinfo=UTC)
+    assert window_end == datetime(2026, 9, 10, 0, 0, 0, tzinfo=UTC)
+
+
+def test_previous_complete_utc_day_consecutive_0600_runs_have_adjacent_windows() -> None:
+    first_run = datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC)
+    second_run = datetime(2026, 9, 11, 6, 0, 0, tzinfo=UTC)
+
+    _, first_window_end = resolve_window(previous_complete_utc_day(first_run), since="24h")
+    second_window_start, _ = resolve_window(previous_complete_utc_day(second_run), since="24h")
+
+    # Adjacent half-open windows: no gap, no overlap.
+    assert first_window_end == second_window_start
+    assert first_window_end == datetime(2026, 9, 10, 0, 0, 0, tzinfo=UTC)
+
+
+def test_previous_complete_utc_day_rejects_naive_datetime() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        previous_complete_utc_day(datetime(2026, 9, 10, 6, 0, 0))
+
+
+def test_previous_complete_utc_day_converts_non_utc_aware_datetime() -> None:
+    # 2026-09-10 02:00 at +05:00 is 2026-09-09 21:00 UTC, so the last completed
+    # UTC day is 2026-09-08.
+    plus_five = timezone(timedelta(hours=5))
+    execution_time = datetime(2026, 9, 10, 2, 0, 0, tzinfo=plus_five)
+    assert previous_complete_utc_day(execution_time) == date(2026, 9, 8)
+
+
+def test_main_previous_complete_utc_day_flag_selects_prior_day_window(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capture_run(**kwargs: Any) -> DigestRunReport:
+        captured_kwargs.update(kwargs)
+        return DigestRunReport(
+            digest_id=None,
+            digest_date=kwargs["digest_date"].isoformat(),
+            status="review",
+            digest_status="review",
+            selected_snapshot_count=0,
+            processed_snapshot_count=0,
+            failed_snapshot_count=0,
+            unresolved_snapshot_count=0,
+            extracted_change_count=0,
+            claim_count=0,
+            published=False,
+            started_at=datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC),
+            completed_at=datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._utc_now",
+        lambda: datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC),
+    )
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.run_with_real_infrastructure",
+        _capture_run,
+    )
+
+    code = main(["--previous-complete-utc-day", "--since", "24h", "--limit", "5"])
+
+    assert code == 1  # review
+    assert captured_kwargs["digest_date"] == date(2026, 9, 9)
+    assert captured_kwargs["window_start"] == datetime(2026, 9, 9, 0, 0, 0, tzinfo=UTC)
+    assert captured_kwargs["window_end"] == datetime(2026, 9, 10, 0, 0, 0, tzinfo=UTC)
+    parsed = json.loads(capsys.readouterr().out.strip())
+    assert parsed["digest_date"] == "2026-09-09"
+
+
+def test_main_default_date_behaviour_unchanged(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capture_run(**kwargs: Any) -> DigestRunReport:
+        captured_kwargs.update(kwargs)
+        return DigestRunReport(
+            digest_id=None,
+            digest_date=kwargs["digest_date"].isoformat(),
+            status="review",
+            digest_status="review",
+            selected_snapshot_count=0,
+            processed_snapshot_count=0,
+            failed_snapshot_count=0,
+            unresolved_snapshot_count=0,
+            extracted_change_count=0,
+            claim_count=0,
+            published=False,
+            started_at=datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC),
+            completed_at=datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run._utc_now",
+        lambda: datetime(2026, 9, 10, 6, 0, 0, tzinfo=UTC),
+    )
+    monkeypatch.setattr(
+        "ai_daily_digest.intelligence.run.run_with_real_infrastructure",
+        _capture_run,
+    )
+
+    code = main(["--since", "24h"])
+
+    assert code == 1
+    # Unchanged default: digest date is *today* in UTC, not the prior day.
+    assert captured_kwargs["digest_date"] == date(2026, 9, 10)
+    assert captured_kwargs["window_start"] == datetime(2026, 9, 10, 0, 0, 0, tzinfo=UTC)
+    assert captured_kwargs["window_end"] == datetime(2026, 9, 11, 0, 0, 0, tzinfo=UTC)
 
 
 def test_render_report_json() -> None:
