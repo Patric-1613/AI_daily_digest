@@ -118,9 +118,12 @@ webhooks and administrative endpoints remain out of scope.
 A repeated pending request may create another confirmation token for the same generation, as ADR
 0012 permits. It does not increment the generation. A resubscription lifecycle starts only when an
 eligible `unsubscribed` row moves back to `pending`; that transition increments the generation,
-clears the prior confirmation/unsubscribe timestamps, records a new `consented_at`, and revokes
-all active tokens from older generations. Expiry of one confirmation token does not itself create
-a new generation.
+clears the prior confirmation/unsubscribe timestamps, and records a new `consented_at`. In the same
+transaction, it stamps `revoked_at` with the resubscription time on every unsubscribe token from
+the generation being superseded, including tokens that already have `used_at`, and revokes all
+other active tokens from older generations. This persisted timestamp starts the superseded
+generation's cleanup window. Expiry of one confirmation token does not itself create a new
+generation.
 
 All subscription-request outcomes return the same response from the API contract. Ineligible,
 confirmed, or suppressed addresses do not reveal their state and do not cause a token to appear in
@@ -159,16 +162,18 @@ Terminal token rows are retained for **90 days** before deletion:
 
 - an expired confirmation token becomes eligible 90 days after `expires_at`;
 - a used confirmation token becomes eligible 90 days after `used_at`;
-- a used unsubscribe token becomes eligible 90 days after `used_at`, unless the
-  current-generation unsubscribe rule below keeps it longer;
+- a used unsubscribe token becomes eligible 90 days after the later of `used_at` and `revoked_at`,
+  unless the current-generation unsubscribe rule below keeps it longer;
 - a revoked token becomes eligible 90 days after `revoked_at`; and
 - when more than one terminal timestamp exists, cleanup uses the latest timestamp.
 
 An active or successfully used unsubscribe-token row for the current confirmed or unsubscribed
 consent generation is retained so links from delivered mail and successful retries remain
 idempotent. It becomes eligible for the 90-day window only after the generation is superseded or
-the token is explicitly revoked. Subscription-level consent, unsubscribe, and suppression audit
-state is not deleted by token cleanup.
+the token is explicitly revoked. Resubscription marks every unsubscribe token from the superseded
+generation with the transaction's `revoked_at`, including successfully used tokens, so cleanup has
+a durable start time and uses the latest applicable terminal timestamp. Subscription-level consent,
+unsubscribe, and suppression audit state is not deleted by token cleanup.
 
 Cleanup is a scheduled, idempotent database operation that deletes only rows already terminal and
 eligible under these rules. Cleanup scheduling is not part of request handling and deletion never
