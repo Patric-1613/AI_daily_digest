@@ -142,11 +142,12 @@ def test_langchain_pypi_resolves_to_canonical_subject() -> None:
         item,
         [],
         alias_table=load_alias_table(),
-        item_text="Synthetic release note for LangChain 9.9.0 (fixture data, not real).",
+        item_text="Release notes for 9.9.0 with performance improvements and bug fixes.",
     )
     assert result.subject == Subject(company="LangChain", product="LangChain")
     assert result.method == "alias_match"
     assert result.confidence == 0.95
+    assert result.matched_text == "langchain_pypi"
 
 
 def test_langgraph_pypi_resolves_to_canonical_subject() -> None:
@@ -168,6 +169,53 @@ def test_langgraph_pypi_resolves_to_canonical_subject() -> None:
     assert result.subject == Subject(company="LangChain", product="LangGraph")
     assert result.method == "alias_match"
     assert result.confidence == 0.95
+    assert result.matched_text == "langgraph_pypi"
+
+
+def test_generic_publisher_does_not_force_product_match() -> None:
+    """A generic company-level publisher must not create a product classification
+    when neither the title nor the body contains product-identifying evidence."""
+    item = SourceItem(
+        id=uuid.UUID("01a01e2f-4440-7dd0-8e40-112233445566"),
+        dedupe_key="sha256:generic-post-1",
+        source_id="generic_company_blog",
+        publisher="LangChain",
+        title="Observability platform update",
+        canonical_url="https://blog.example.com/observability",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="General infrastructure changes and monitoring dashboard updates.",
+    )
+    assert result.subject is None
+    assert result.method == "no_match"
+    assert result.confidence == 0.0
+
+
+def test_generic_source_id_does_not_force_product_match() -> None:
+    """A generic company source ID (e.g. langchain_changelog) must not force a product
+    match without explicit product evidence in the text."""
+    item = SourceItem(
+        id=uuid.UUID("01a01e2f-4550-7ee0-8f50-667788990011"),
+        dedupe_key="sha256:generic-changelog-1",
+        source_id="langchain_changelog",
+        publisher="Python Package Index",
+        title="Quarterly ecosystem recap",
+        canonical_url="https://example.com/changelog/recap",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="Overview of ecosystem events, contributor highlights, and community calls.",
+    )
+    assert result.subject is None
+    assert result.method == "no_match"
+    assert result.confidence == 0.0
 
 
 def test_unknown_source_item_fails_closed() -> None:
