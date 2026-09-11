@@ -76,7 +76,7 @@ import logging
 import re
 from collections.abc import Callable
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ai_daily_digest.intelligence.facts import normalise_name
 from ai_daily_digest.intelligence.grounding import numbers_in, value_supported_by_quote
@@ -97,6 +97,16 @@ logger = logging.getLogger("intelligence.extract_facts")
 
 CONFIDENCE_THRESHOLD = 0.6
 PROMPT_VERSION = "extract-facts-v1"
+
+# Explicit, reviewed closed set of context-window aliases justified by model output.
+# Preserves closed-schema design: unrelated, near-miss, or novel fields remain unmapped
+# and are rejected fail-closed.
+_CANONICAL_FIELD_ALIASES: dict[str, str] = {
+    "context_window": "context_window_tokens",
+    "Context window": "context_window_tokens",
+    "context window": "context_window_tokens",
+    "context-window": "context_window_tokens",
+}
 
 # Approved explicit-withholding wording -- deliberately narrow (per
 # review): vague absence ("we tested multiple models") must NOT match,
@@ -267,7 +277,13 @@ class FactCandidate(BaseModel):
     response must explicitly say `null` for a not_disclosed candidate,
     never silently omit the key."""
 
-    field: str
+    field: str = Field(
+        description=(
+            "Exact canonical snake_case field key from the closed list: "
+            "'context_window_tokens', 'input_price_usd', 'output_price_usd', "
+            "'benchmark_scores', 'availability_regions', 'licence_terms', 'modalities'."
+        )
+    )
     value: str | None
     disclosure_status: DisclosureStatus = DisclosureStatus.DISCLOSED
     quoted_span: str
@@ -278,6 +294,13 @@ class FactCandidate(BaseModel):
     # False. A malformed response now fails call_structured's own
     # validation instead, triggering its retry-once-then-fail-loudly path.
     confidence: Confidence
+
+    @field_validator("field", mode="before")
+    @classmethod
+    def _normalize_field(cls, v: object) -> object:
+        if not isinstance(v, str):
+            return v
+        return _CANONICAL_FIELD_ALIASES.get(v.strip(), v)
 
     @model_validator(mode="after")
     def _require_consistent_disclosure_state(self) -> FactCandidate:
@@ -353,6 +376,24 @@ def _cross_contaminated_indices(candidates: list[FactCandidate]) -> set[int]:
     return ambiguous
 
 
+def _conflicting_same_field_indices(candidates: list[FactCandidate]) -> set[int]:
+    """Indices of candidates that contradict another candidate for the SAME
+    canonical field in the same extraction response (e.g. one candidate claims
+    value '100000' and another claims '200000', or disclosed vs not_disclosed).
+    Fails closed by dropping all contradictory candidates for that field."""
+    conflicting: set[int] = set()
+    for i, a in enumerate(candidates):
+        for j, b in enumerate(candidates):
+            if i >= j:
+                continue
+            if a.field == b.field and (
+                a.value != b.value or a.disclosure_status != b.disclosure_status
+            ):
+                conflicting.add(i)
+                conflicting.add(j)
+    return conflicting
+
+
 def _quote_supports_non_disclosure(field: str, quote: str) -> bool:
     """Deterministic semantic-support check for a not_disclosed
     candidate, per review: the quote actually appearing in the snapshot
@@ -425,6 +466,19 @@ def _default_call(system: str, prompt: str) -> FactExtractionResponse:
     )
 
 
+def _render_extract_prompt(subject: Subject, snapshot: DocumentSnapshot) -> tuple[str, str]:
+    system, user_template = load_prompt("extract_facts")
+    prompt = render(
+        user_template,
+        subject_company=subject.company,
+        subject_product=subject.product,
+        snapshot_id=str(snapshot.id),
+        comparable_fields=_format_fields(),
+        snapshot_text=snapshot.content_text or "",
+    )
+    return system, prompt
+
+
 def extract_facts(
     subject: Subject,
     snapshot: DocumentSnapshot,
@@ -433,29 +487,23 @@ def extract_facts(
 ) -> list[ExtractedFact]:
     """call_fn is injectable for testing — defaults to the real Anthropic
     call via intelligence/llm.py."""
-    system, user_template = load_prompt("extract_facts")
-    prompt = render(
-        user_template,
-        subject_company=subject.company,
-        subject_product=subject.product,
-        # render()'s **values: str requires an actual str -- this is
-        # exactly the "external boundary" (an LLM prompt, sent outside
-        # this codebase) where a uuid.UUID value is deliberately
-        # converted to its canonical string form (ADR 0007's "convert
-        # only at an explicit external boundary" rule), not a scattered
-        # workaround.
-        snapshot_id=str(snapshot.id),
-        comparable_fields=_format_fields(),
-        snapshot_text=snapshot.content_text or "",
-    )
-
-    call = call_fn or _default_call
-    response = call(system, prompt)
+    response = (call_fn or _default_call)(*_render_extract_prompt(subject, snapshot))
 
     haystack = normalise_name(snapshot.content_text or "")
     ambiguous_indices = _cross_contaminated_indices(response.facts)
+    conflicting_indices = _conflicting_same_field_indices(response.facts)
+    seen_facts: set[tuple[str, str | None, DisclosureStatus]] = set()
     facts: list[ExtractedFact] = []
     for i, candidate in enumerate(response.facts):
+        if i in conflicting_indices:
+            logger.warning(
+                "extraction_rejected reason=conflicting_same_field snapshot_id=%s "
+                "field=%s value=%r",
+                snapshot.id,
+                candidate.field,
+                candidate.value,
+            )
+            continue
         if i in ambiguous_indices:
             logger.warning(
                 "extraction_rejected reason=ambiguous_multi_field_quote snapshot_id=%s "
@@ -526,6 +574,17 @@ def extract_facts(
                     candidate.quoted_span,
                 )
                 continue
+
+        fact_signature = (candidate.field, candidate.value, candidate.disclosure_status)
+        if fact_signature in seen_facts:
+            logger.info(
+                "extraction_duplicate_deduplicated snapshot_id=%s field=%s value=%r",
+                snapshot.id,
+                candidate.field,
+                candidate.value,
+            )
+            continue
+        seen_facts.add(fact_signature)
 
         facts.append(
             ExtractedFact(

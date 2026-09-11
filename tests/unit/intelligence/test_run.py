@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any, cast
@@ -15,8 +15,8 @@ import pytest
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
 from ai_daily_digest.intelligence.db.repository import PostgresFactStore
-from ai_daily_digest.intelligence.extract_facts import FactExtractionResponse
-from ai_daily_digest.intelligence.resolve import SubjectAlias
+from ai_daily_digest.intelligence.extract_facts import FactCandidate, FactExtractionResponse
+from ai_daily_digest.intelligence.resolve import SubjectAlias, load_alias_table
 from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
 from ai_daily_digest.intelligence.run import (
     DigestRunEvaluation,
@@ -39,10 +39,13 @@ from ai_daily_digest.intelligence.run import (
 )
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import (
+    Change,
     Digest,
     DigestClaim,
     DigestStatus,
     DocumentSnapshot,
+    ExtractedFact,
+    FactObservation,
     SourceItem,
     Subject,
 )
@@ -1713,3 +1716,306 @@ async def test_resolve_and_extract_item_resolves_gpt_live_1_without_llm() -> Non
     )
 
     assert subject == gpt_live_1
+
+
+@pytest.mark.asyncio
+async def test_anthropic_rehearsal_both_snapshots_resolve_to_canonical_claude() -> None:
+    """Proves both Anthropic rehearsal articles (100K and Claude 2.1) resolve
+    deterministically to Subject(company='Anthropic', product='Claude')."""
+    alias_table = load_alias_table()
+
+    def fail_llm(system: str, prompt: str) -> ResolveLLMResponse:
+        raise AssertionError("resolve_via_llm must not be called")
+
+    # Item 1: 100K Context Windows
+    item1_id = new_id()
+    item1 = SourceItem(
+        id=item1_id,
+        dedupe_key="anthropic_100k",
+        source_id="anthropic_news",
+        publisher="Anthropic",
+        title="Introducing 100K Context Windows",
+        canonical_url="https://www.anthropic.com/news/100k-context-windows",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2023, 5, 11, 9, 0, 0, tzinfo=UTC),
+    )
+    snap1 = DocumentSnapshot(
+        id=new_id(),
+        source_item_id=item1_id,
+        fetched_at=datetime(2023, 5, 11, 9, 0, 0, tzinfo=UTC),
+        content_hash="sha256:100k",
+        content_text="Claude now supports a 100,000 token context window.",
+    )
+
+    subj1, _ = await _resolve_and_extract_item(
+        item1, snap1, set(), alias_table, fail_llm, _no_facts
+    )
+    assert subj1 == Subject(company="Anthropic", product="Claude")
+
+    # Item 2: Claude 2.1 (200K)
+    item2_id = new_id()
+    item2 = SourceItem(
+        id=item2_id,
+        dedupe_key="anthropic_200k",
+        source_id="anthropic_news",
+        publisher="Anthropic",
+        title="Claude 2.1",
+        canonical_url="https://www.anthropic.com/news/claude-2-1",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2023, 11, 21, 9, 0, 0, tzinfo=UTC),
+    )
+    snap2 = DocumentSnapshot(
+        id=new_id(),
+        source_item_id=item2_id,
+        fetched_at=datetime(2023, 11, 21, 9, 0, 0, tzinfo=UTC),
+        content_hash="sha256:200k",
+        content_text="Claude 2.1 provides a 200,000 token context window.",
+    )
+
+    subj2, _ = await _resolve_and_extract_item(
+        item2, snap2, set(), alias_table, fail_llm, _no_facts
+    )
+    assert subj2 == Subject(company="Anthropic", product="Claude")
+
+
+@pytest.mark.asyncio
+async def test_anthropic_rehearsal_two_snapshot_progression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves the full 2-snapshot Anthropic rehearsal progression:
+    1. 100K snapshot processed first -> establishes baseline in current_facts (0 changes).
+    2. 200K snapshot processed second -> compares against baseline -> produces 1 real change
+       (100,000 -> 200,000) and 1 grounded claim.
+    3. run_pipeline produces a published digest (status='published', claim_count=1, exit_code=0)."""
+    target_date = date(2026, 9, 11)
+    t1 = datetime(2023, 5, 11, 9, 0, 0, tzinfo=UTC)
+    t2 = datetime(2023, 11, 21, 9, 0, 0, tzinfo=UTC)
+
+    claude_subject = Subject(company="Anthropic", product="Claude")
+
+    item1_row = SourceItemRow(
+        id=new_id(),
+        dedupe_key="anthropic_100k",
+        source_id="anthropic_news",
+        publisher="Anthropic",
+        title="Introducing 100K Context Windows",
+        canonical_url="https://www.anthropic.com/news/100k-context-windows",
+        first_fetched_at=t1,
+        language="en",
+    )
+    snap1_row = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item1_row.id,
+        content_hash="sha256:100k",
+        fetched_at=t1,
+        content_text="Claude now supports a 100,000 token context window.",
+    )
+
+    item2_row = SourceItemRow(
+        id=new_id(),
+        dedupe_key="anthropic_200k",
+        source_id="anthropic_news",
+        publisher="Anthropic",
+        title="Claude 2.1",
+        canonical_url="https://www.anthropic.com/news/claude-2-1",
+        first_fetched_at=t2,
+        language="en",
+    )
+    snap2_row = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item2_row.id,
+        content_hash="sha256:200k",
+        fetched_at=t2,
+        content_text="Claude 2.1 provides a 200,000 token context window.",
+    )
+
+    # In-memory mock store simulating PostgresFactStore behavior
+    current_facts_state: dict[tuple[str, str, str], tuple[FactObservation, ExtractedFact]] = {}
+    committed_changes: list[Change] = []
+    persisted_digests: list[Digest] = []
+
+    class MockFactStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def read_current_facts(
+            self, subject: Subject, fields: list[str]
+        ) -> dict[str, tuple[Any, Any]]:
+            res: dict[str, tuple[Any, Any]] = {}
+            for f in fields:
+                key = (subject.company, subject.product, f)
+                if key in current_facts_state:
+                    obs, ef = current_facts_state[key]
+                    # Format as (CurrentFactRow-like, ExtractedFactRow-like)
+                    cf_mock = MagicMock()
+                    cf_mock.fact_id = ef.id
+                    cf_mock.snapshot_id = obs.snapshot_id
+                    cf_mock.observed_at = obs.observed_at
+                    cf_mock.extraction_version = 1
+                    ef_mock = MagicMock()
+                    ef_mock.value = obs.value
+                    ef_mock.disclosure_status = ef.disclosure_status
+                    res[f] = (cf_mock, ef_mock)
+            return res
+
+        async def lock_subject_fields(self, subject: Subject, fields: list[str]) -> None:
+            pass
+
+        async def record_extracted_facts(
+            self,
+            subject: Subject,
+            facts: Sequence[ExtractedFact],
+            *,
+            snapshot_observed_at: datetime,
+            extraction_version: int = 1,
+        ) -> list[ExtractedFact]:
+            return list(facts)
+
+        async def advance_current_facts(
+            self, subject: Subject, facts: Sequence[ExtractedFact]
+        ) -> dict[str, bool]:
+            return {f.field: True for f in facts}
+
+        async def get_changes_for_snapshot(self, snapshot_id: uuid.UUID) -> list[Change]:
+            return [c for c in committed_changes if c.current.snapshot_id == snapshot_id]
+
+        async def detect_and_persist_changes(
+            self,
+            subject: Subject,
+            facts: Sequence[ExtractedFact],
+            *,
+            snapshot_observed_at: datetime,
+            detected_at: datetime,
+            extraction_version: int = 1,
+            change_set_id: uuid.UUID | None = None,
+        ) -> list[Change]:
+            changes: list[Change] = []
+            for f in facts:
+                key = (subject.company, subject.product, f.field)
+                prior = current_facts_state.get(key)
+                curr_obs = FactObservation(
+                    value=f.value,
+                    observed_at=snapshot_observed_at,
+                    snapshot_id=f.snapshot_id,
+                )
+                if prior is None:
+                    # Baseline established
+                    current_facts_state[key] = (curr_obs, f)
+                else:
+                    prior_obs, _ = prior
+                    if prior_obs.value != f.value:
+                        ch = Change(
+                            id=new_id(),
+                            change_set_id=change_set_id or new_id(),
+                            subject=subject,
+                            field=f.field,
+                            change_type="increased",
+                            previous=prior_obs,
+                            current=curr_obs,
+                            confidence=f.confidence or 1.0,
+                            detected_at=detected_at,
+                        )
+                        changes.append(ch)
+                        committed_changes.append(ch)
+                        current_facts_state[key] = (curr_obs, f)
+            return changes
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            persisted_digests.append(digest)
+            return digest
+
+        async def publish_digest(
+            self,
+            digest_id: uuid.UUID,
+            *,
+            known_snapshot_ids: Any,
+            snapshot_resolver: Any,
+        ) -> Digest:
+            for d in persisted_digests:
+                if d.id == digest_id:
+                    published = d.model_copy(update={"status": DigestStatus.PUBLISHED})
+                    return published
+            return persisted_digests[0].model_copy(update={"status": DigestStatus.PUBLISHED})
+
+        async def get_published_digest_by_date(self, *args: Any, **kwargs: Any) -> Digest | None:
+            return None
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockFactStore)
+
+    # Mock DB session
+    class MockResult:
+        def __init__(self, rows: list[Any]) -> None:
+            self._rows = rows
+
+        def all(self) -> list[Any]:
+            return self._rows
+
+        def scalars(self) -> Any:
+            mock_scalars = MagicMock()
+            mock_scalars.all.return_value = self._rows
+            return mock_scalars
+
+    class MockSession:
+        async def execute(self, stmt: Any) -> Any:
+            # Check if selecting snapshots
+            stmt_str = str(stmt)
+            if "source_items" in stmt_str and "document_snapshots" in stmt_str:
+                # Deterministic oldest-first order
+                return MockResult([(item1_row, snap1_row), (item2_row, snap2_row)])
+            if "subjects" in stmt_str:
+                return MockResult([(claude_subject.company, claude_subject.product)])
+            return MockResult([])
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    def fake_extract_call(system: str, prompt: str) -> FactExtractionResponse:
+        # Exercises prompt extraction returning context_window alias or canonical
+        if "100K" in prompt or "100,000" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="context_window",  # Model returns alias; normalized by FactCandidate
+                        value="100000",
+                        quoted_span="Claude now supports a 100,000 token context window.",
+                        confidence=0.98,
+                    )
+                ]
+            )
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="200000",
+                    quoted_span="Claude 2.1 provides a 200,000 token context window.",
+                    confidence=0.98,
+                )
+            ]
+        )
+
+    report = await run_pipeline(
+        session_factory=cast(Any, mock_session_factory),
+        digest_date=target_date,
+        window_start=datetime(2023, 1, 1, tzinfo=UTC),
+        window_end=datetime(2024, 1, 1, tzinfo=UTC),
+        extract_call_fn=fake_extract_call,
+    )
+
+    assert report.selected_snapshot_count == 2
+    assert report.processed_snapshot_count == 2
+    assert report.failed_snapshot_count == 0
+    assert report.unresolved_snapshot_count == 0
+    assert report.extracted_change_count == 1
+    assert report.claim_count == 1
+    assert report.published is True
+    assert report.status == "published"
+    assert exit_code_for(report) == 0
+    assert len(committed_changes) == 1
+    change = committed_changes[0]
+    assert change.subject == claude_subject
+    assert change.field == "context_window_tokens"
+    assert change.previous is not None
+    assert change.previous.value == "100000"
+    assert change.current.value == "200000"

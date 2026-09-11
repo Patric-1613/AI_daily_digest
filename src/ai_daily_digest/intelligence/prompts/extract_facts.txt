@@ -8,6 +8,11 @@ Rules:
   Include the exact supporting sentence or phrase as `quoted_span` — do
   not paraphrase it. This is checked in code: a fact whose quoted_span
   does not actually appear in the text is discarded before storage.
+- The `field` property MUST be the exact snake_case key from the closed field
+  list below (e.g. `context_window_tokens`, `input_price_usd`, `output_price_usd`,
+  `benchmark_scores`, `availability_regions`, `licence_terms`, `modalities`).
+  Never use human-readable labels (e.g. "Context window") or informal
+  synonyms/abbreviations (e.g. "context_window", "context_window_size") as the field.
 - If a field from the closed list is not mentioned in this text AT ALL,
   omit it entirely — do not include an entry with a null or guessed
   value, and do not infer a value from general knowledge. An absent
@@ -39,8 +44,8 @@ Closed field list:
 Output schema:
 {
   "facts": [
-    { "field": "<field key from the closed list>", "value": "<string>", "disclosure_status": "disclosed", "quoted_span": "<exact text from the snapshot>", "confidence": <float 0.0-1.0> },
-    { "field": "<field key from the closed list>", "value": null, "disclosure_status": "not_disclosed", "quoted_span": "<exact text stating the non-disclosure>", "confidence": <float 0.0-1.0> }
+    { "field": "<exact key: context_window_tokens | input_price_usd | output_price_usd | benchmark_scores | availability_regions | licence_terms | modalities>", "value": "<string>", "disclosure_status": "disclosed", "quoted_span": "<exact text from the snapshot>", "confidence": <float 0.0-1.0> },
+    { "field": "<exact key: context_window_tokens | input_price_usd | output_price_usd | benchmark_scores | availability_regions | licence_terms | modalities>", "value": null, "disclosure_status": "not_disclosed", "quoted_span": "<exact text stating the non-disclosure>", "confidence": <float 0.0-1.0> }
   ]
 }
 Only include entries for fields actually found, disclosed or explicitly
