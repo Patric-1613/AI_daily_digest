@@ -1080,3 +1080,94 @@ async def test_evaluate_digest_run_integration(
         # Assert not found raises ValueError
         with pytest.raises(ValueError, match="not found"):
             await evaluate_digest_run(new_id(), session)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_rehearsal_two_snapshot_progression_postgresql_integration(
+    open_database_session: _OpenSession,
+) -> None:
+    """Proves the full 2-snapshot Anthropic rehearsal progression in PostgreSQL:
+    1. Seed 100K snapshot (May 2023) and 200K snapshot (Nov 2023).
+    2. run_pipeline processes oldest-first through the real PostgresFactStore.
+    3. May 2023 establishes baseline in current_facts (0 changes).
+    4. Nov 2023 compares against baseline, detects 100000 -> 200000 change,
+       and publishes a digest in PostgreSQL (status='published', exit_code=0).
+    """
+    t1 = datetime(2023, 5, 11, 9, 0, 0, tzinfo=UTC)
+    t2 = datetime(2023, 11, 21, 9, 0, 0, tzinfo=UTC)
+    target_date = date(2026, 9, 11)
+
+    async with open_database_session() as session:
+        # Item 1 (100K)
+        await _create_item_and_snapshot(
+            session,
+            publisher="Anthropic",
+            title="Introducing 100K Context Windows",
+            content_text="Claude now supports a 100,000 token context window.",
+            fetched_at=t1,
+        )
+        # Item 2 (200K)
+        await _create_item_and_snapshot(
+            session,
+            publisher="Anthropic",
+            title="Claude 2.1",
+            content_text="Claude 2.1 provides a 200,000 token context window.",
+            fetched_at=t2,
+        )
+        await session.commit()
+
+    def fake_extract(system: str, prompt: str) -> FactExtractionResponse:
+        del system
+        if "100,000" in prompt or "100K" in prompt:
+            return FactExtractionResponse(
+                facts=[
+                    FactCandidate(
+                        field="context_window",
+                        value="100K",
+                        quoted_span="Claude now supports a 100,000 token context window.",
+                        confidence=0.98,
+                    )
+                ]
+            )
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="200K",
+                    quoted_span="Claude 2.1 provides a 200,000 token context window.",
+                    confidence=0.98,
+                )
+            ]
+        )
+
+    report = await run_pipeline(
+        session_factory=open_database_session,
+        digest_date=target_date,
+        window_start=datetime(2023, 1, 1, tzinfo=UTC),
+        window_end=datetime(2024, 1, 1, tzinfo=UTC),
+        extract_call_fn=fake_extract,
+    )
+
+    assert report.selected_snapshot_count == 2
+    assert report.processed_snapshot_count == 2
+    assert report.failed_snapshot_count == 0
+    assert report.unresolved_snapshot_count == 0
+    assert report.extracted_change_count == 1
+    assert report.claim_count == 1
+    assert report.published is True
+    assert report.status == "published"
+    assert report.digest_id is not None
+
+    async with open_database_session() as session:
+        # Check persisted digest in PostgreSQL
+        digest_row = await session.get(DigestModel, report.digest_id)
+        assert digest_row is not None
+        assert digest_row.status == "published"
+
+        # Check persisted change in PostgreSQL
+        changes_stmt = select(ChangeModel)
+        changes = (await session.execute(changes_stmt)).scalars().all()
+        assert len(changes) == 1
+        assert changes[0].field == "context_window_tokens"
+        assert changes[0].previous_value == "100000"
+        assert changes[0].current_value == "200000"

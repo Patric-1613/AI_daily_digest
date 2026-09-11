@@ -265,6 +265,39 @@ def _pricing_qualifiers_support_field(field: str, clause: str) -> bool:
     return True
 
 
+_CONTEXT_WINDOW_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmM])$")
+_INTEGER_VALUE_RE = re.compile(r"^(?:\d{1,3}(?:,\d{3})+|\d+)$")
+
+
+def _canonicalize_context_window_value(val: str) -> str:
+    """Canonicalizes context-window token values into a standardized integer string.
+    Accepted formats: '100K', '100k', '200K', '1M', '100,000', '100000'.
+    Rejected formats (fail closed): booleans, negative numbers, floats, malformed strings.
+    """
+    cleaned = val.strip()
+    if not cleaned:
+        raise ValueError("Context window value cannot be empty")
+    if cleaned.lower() in ("true", "false", "none", "null", "tbd"):
+        raise ValueError(f"Boolean or placeholder value not allowed: {val!r}")
+
+    suffix_match = _CONTEXT_WINDOW_SUFFIX_RE.match(cleaned)
+    if suffix_match:
+        val_num = float(suffix_match.group(1))
+        multiplier = 1_000 if suffix_match.group(2).lower() == "k" else 1_000_000
+        total = val_num * multiplier
+        if total <= 0 or not total.is_integer():
+            raise ValueError(f"Invalid context window value: {val!r}")
+        return str(int(total))
+
+    if _INTEGER_VALUE_RE.match(cleaned):
+        num = int(cleaned.replace(",", ""))
+        if num <= 0:
+            raise ValueError(f"Context window must be positive integer: {val!r}")
+        return str(num)
+
+    raise ValueError(f"Cannot canonicalize context window value: {val!r}")
+
+
 class FactCandidate(BaseModel):
     """disclosure_status/value: ADR 0006's "unknown" vs. "not disclosed"
     distinction, mirrored from ExtractedFact (shared/schemas.py) here so
@@ -302,6 +335,15 @@ class FactCandidate(BaseModel):
             return v
         return _CANONICAL_FIELD_ALIASES.get(v.strip(), v)
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def _normalize_value(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, str):
+            raise ValueError(f"Expected string or None for fact value, got {type(v).__name__}")
+        return v.strip()
+
     @model_validator(mode="after")
     def _require_consistent_disclosure_state(self) -> FactCandidate:
         """Same contradiction ExtractedFact's own validator rejects
@@ -314,8 +356,13 @@ class FactCandidate(BaseModel):
             raise ValueError(
                 "a candidate with disclosure_status='not_disclosed' must not also report a value"
             )
-        if self.disclosure_status == DisclosureStatus.DISCLOSED and not self.value:
-            raise ValueError("a candidate with disclosure_status='disclosed' must report a value")
+        if self.disclosure_status == DisclosureStatus.DISCLOSED:
+            if not self.value:
+                raise ValueError(
+                    "a candidate with disclosure_status='disclosed' must report a value"
+                )
+            if self.field == "context_window_tokens":
+                self.value = _canonicalize_context_window_value(self.value)
         return self
 
 

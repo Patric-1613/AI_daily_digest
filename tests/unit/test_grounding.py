@@ -111,5 +111,11 @@ def test_value_not_supported_for_unrelated_non_numeric_phrase() -> None:
     assert value_supported_by_quote("MIT", "now licensed under Apache-2.0 terms") is False
 
 
+def test_value_supported_when_number_has_metric_multiplier() -> None:
+    assert value_supported_by_quote("100000", "introducing a 100K context window") is True
+    assert value_supported_by_quote("200000", "now supports 200k context window") is True
+    assert value_supported_by_quote("1000000", "scaling up to 1M tokens") is True
+
+
 def test_empty_value_is_never_supported() -> None:
     assert value_supported_by_quote("", "any quote at all") is False

@@ -64,6 +64,7 @@ _NUMBER_TOKEN_RE = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?(?![A-Za-z])")
 # is a real, legitimate, already-tested number and must not match this
 # pattern -- digits, not letters, precede its hyphen.
 _COMPOUND_PRODUCT_NAME_RE = re.compile(r"[A-Za-z]+-\d+(?:\.\d+)?[A-Za-z]*")
+_MULTIPLIER_TOKEN_RE = re.compile(r"(?<![A-Za-z])(\d+(?:\.\d+)?)\s*([kKmM])(?![A-Za-z])")
 
 
 def numbers_in(text: str) -> set[str]:
@@ -84,6 +85,23 @@ def numbers_in(text: str) -> set[str]:
             continue
         numbers.add(match.group())
     return numbers
+
+
+def _multiplier_numbers_in(text: str) -> set[str]:
+    stripped = _NUMBER_FORMATTING_RE.sub("", text)
+    excluded_spans = [match.span() for match in _COMPOUND_PRODUCT_NAME_RE.finditer(stripped)]
+    multiplier_nums: set[str] = set()
+    for match in _MULTIPLIER_TOKEN_RE.finditer(stripped):
+        if any(start <= match.start() and match.end() <= end for start, end in excluded_spans):
+            continue
+        val_str, suffix = match.group(1), match.group(2).lower()
+        multiplier = 1_000 if suffix == "k" else 1_000_000
+        try:
+            num = float(val_str) * multiplier
+            multiplier_nums.add(str(int(num)) if num.is_integer() else str(num))
+        except (ValueError, OverflowError):
+            pass
+    return multiplier_nums
 
 
 def value_supported_by_quote(value: str, quoted_span: str) -> bool:
@@ -107,8 +125,8 @@ def value_supported_by_quote(value: str, quoted_span: str) -> bool:
     if normalised_value and f" {normalised_value} " in f" {normalised_quote} ":
         return True
 
-    value_numbers = numbers_in(value)
+    value_numbers = numbers_in(value) | _multiplier_numbers_in(value)
     if not value_numbers:
         return False
-    quote_numbers = numbers_in(quoted_span)
+    quote_numbers = numbers_in(quoted_span) | _multiplier_numbers_in(quoted_span)
     return value_numbers <= quote_numbers
