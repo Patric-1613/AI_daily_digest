@@ -18,7 +18,13 @@ const models = [
   { name: "Grok", icon: "𝕏", colors: ["#F58025", "#D84A5C"] },
 ];
 
-export default function App() {
+type AppProps = {
+  subscriptionsEnabled?: boolean;
+};
+
+export default function App({
+  subscriptionsEnabled = publicConfig.subscriptionsEnabled,
+}: AppProps) {
   const [digests, setDigests] = useState<DigestSummary[]>([]);
   const [digestNextCursor, setDigestNextCursor] = useState<string | null>(null);
   const [digestsInitialLoading, setDigestsInitialLoading] = useState(true);
@@ -166,7 +172,7 @@ export default function App() {
             <option value="yesterday">Yesterday</option>
             <option value="week">This week</option>
           </select>
-          <SubscribeForm />
+          {subscriptionsEnabled ? <SubscribeForm /> : null}
         </div>
       </header>
 

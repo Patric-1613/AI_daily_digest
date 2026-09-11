@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.delivery.subscriptions.models import (
+    ConsentEventType,
     SubscriptionConsentEventModel,
     SubscriptionModel,
     SubscriptionStatus,
@@ -268,6 +269,131 @@ async def test_concurrent_subscription_requests_converge_on_one_row(
             .where(SubscriptionModel.normalized_email == address)
         )
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_sibling_confirmations_serialize_with_one_transition(
+    open_database_session: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+) -> None:
+    address = f"concurrent-confirm-{uuid.uuid4()}@example.com"
+    async with open_database_session() as setup_session:
+        repository = SubscriptionRepository(setup_session, _codec())
+        first = await repository.request_subscription(address)
+        second = await repository.request_subscription(address)
+        assert first.confirmation_token is not None
+        assert second.confirmation_token is not None
+
+    start_barrier = asyncio.Barrier(2)
+
+    async def confirm_once(token: str) -> str:
+        async with open_database_session() as session:
+            await start_barrier.wait()
+            try:
+                await SubscriptionRepository(session, _codec()).confirm(token)
+            except InvalidSubscriptionTokenError:
+                return "invalid"
+        return "confirmed"
+
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(
+            confirm_once(first.confirmation_token.token),
+            confirm_once(second.confirmation_token.token),
+        ),
+        timeout=10,
+    )
+
+    assert sorted(outcomes) == ["confirmed", "invalid"]
+    async with open_database_session() as assertion_session:
+        subscription = await assertion_session.scalar(
+            select(SubscriptionModel).where(SubscriptionModel.normalized_email == address)
+        )
+        assert subscription is not None
+        confirmed_events = await assertion_session.scalar(
+            select(func.count())
+            .select_from(SubscriptionConsentEventModel)
+            .where(
+                SubscriptionConsentEventModel.subscription_id == subscription.id,
+                SubscriptionConsentEventModel.event_type == ConsentEventType.CONFIRMED.value,
+            )
+        )
+        tokens = (
+            await assertion_session.scalars(
+                select(SubscriptionTokenModel).where(
+                    SubscriptionTokenModel.subscription_id == subscription.id
+                )
+            )
+        ).all()
+
+    assert subscription.status == SubscriptionStatus.CONFIRMED.value
+    assert confirmed_events == 1
+    assert sum(token.used_at is not None for token in tokens) == 1
+    assert sum(token.revoked_at is not None for token in tokens) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirmation_racing_suppression_never_deadlocks_and_suppression_is_terminal(
+    open_database_session: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+) -> None:
+    address = f"confirm-suppress-{uuid.uuid4()}@example.com"
+    async with open_database_session() as setup_session:
+        repository = SubscriptionRepository(setup_session, _codec())
+        requested = await repository.request_subscription(address)
+        assert requested.confirmation_token is not None
+        confirmation_token = requested.confirmation_token
+        token_row = await setup_session.scalar(
+            select(SubscriptionTokenModel).where(
+                SubscriptionTokenModel.token_digest == confirmation_token.token_digest
+            )
+        )
+        assert token_row is not None
+        subscription_id = token_row.subscription_id
+
+    start_barrier = asyncio.Barrier(2)
+
+    async def confirm_once() -> str:
+        async with open_database_session() as session:
+            await start_barrier.wait()
+            try:
+                await SubscriptionRepository(session, _codec()).confirm(confirmation_token.token)
+            except InvalidSubscriptionTokenError:
+                return "invalid"
+        return "confirmed"
+
+    async def suppress_once() -> None:
+        async with open_database_session() as session:
+            await start_barrier.wait()
+            await SubscriptionRepository(session, _codec()).suppress(
+                subscription_id, SuppressionReason.ADMINISTRATIVE
+            )
+
+    confirmation_outcome, _ = await asyncio.wait_for(
+        asyncio.gather(confirm_once(), suppress_once()),
+        timeout=10,
+    )
+
+    assert confirmation_outcome in {"confirmed", "invalid"}
+    async with open_database_session() as assertion_session:
+        subscription = await assertion_session.get(SubscriptionModel, subscription_id)
+        assert subscription is not None
+        event_types = (
+            await assertion_session.scalars(
+                select(SubscriptionConsentEventModel.event_type).where(
+                    SubscriptionConsentEventModel.subscription_id == subscription_id
+                )
+            )
+        ).all()
+        token = await assertion_session.scalar(
+            select(SubscriptionTokenModel).where(
+                SubscriptionTokenModel.token_digest == confirmation_token.token_digest
+            )
+        )
+
+    assert subscription.status == SubscriptionStatus.SUPPRESSED.value
+    assert subscription.suppression_reason == SuppressionReason.ADMINISTRATIVE.value
+    assert event_types.count(ConsentEventType.SUPPRESSED.value) == 1
+    assert event_types.count(ConsentEventType.CONFIRMED.value) <= 1
+    assert token is not None
+    assert token.revoked_at is not None
 
 
 @pytest.mark.asyncio

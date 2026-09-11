@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { SubscriptionActionPage } from "./Subscriptions";
+import { publicConfig } from "./config";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -17,6 +18,8 @@ const action = path === "/subscriptions/confirm"
 
 createRoot(root).render(
   <StrictMode>
-    {action ? <SubscriptionActionPage action={action} /> : <App />}
+    {action && publicConfig.subscriptionsEnabled
+      ? <SubscriptionActionPage action={action} />
+      : <App />}
   </StrictMode>,
 );

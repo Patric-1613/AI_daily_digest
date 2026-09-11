@@ -446,3 +446,5 @@ or logged. Person A must also configure Uvicorn/Render with an explicit trusted-
 verify that `request.client` contains the validated public client address; wildcard proxy trust is
 not allowed. Until both conditions are reviewed and tested under issue #53, the production factory
 keeps all subscription routes unmounted even when subscription security keys are present.
+The static frontend likewise keeps `VITE_SUBSCRIPTIONS_ENABLED` false or unset until those gates
+are complete, so production does not display controls backed by an unavailable endpoint.
