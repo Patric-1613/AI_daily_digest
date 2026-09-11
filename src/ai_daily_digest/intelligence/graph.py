@@ -118,14 +118,15 @@ def build_graph(  # pylint: disable=too-many-arguments,too-many-locals
         return {"resolution": result, "subject": result.subject}
 
     def classify_llm(state: PipelineState) -> PipelineState:
-        """Only reached when classify_deterministic didn't get a clean
-        single match (see route_after_classify) — resolves against
+        """Only reached when classify_deterministic found true residue
+        (method="no_match", see route_after_classify) — resolves against
         whichever candidates the deterministic pass narrowed it to."""
         prior = state["resolution"]
         result = resolve_via_llm(
             state["item"],
             prior.candidate_subjects,
             item_text=state["snapshot"].content_text or "",
+            alias_table=resolved_alias_table,
             call_fn=resolve_llm_call_fn,
         )
         if result.subject is not None:
@@ -133,10 +134,20 @@ def build_graph(  # pylint: disable=too-many-arguments,too-many-locals
         return {"resolution": result, "subject": result.subject}
 
     def route_after_classify(state: PipelineState) -> str:
-        """The only branch point before the LLM fallback: a clean
-        "alias_match" skips straight to extraction; "no_match" or
-        "ambiguous" both need the LLM to adjudicate."""
-        return "extract" if state["resolution"].method == "alias_match" else "classify_llm"
+        """The branch point before the LLM fallback: a clean "alias_match"
+        skips straight to extraction; "no_match" needs the LLM to
+        adjudicate; "ambiguous_multi_subject" (two or more tracked
+        subjects both phrase-matched, e.g. Codex and ChatGPT) ends the run
+        for this item right here instead — the LLM is never asked to pick
+        one, since the schema has no way to represent "both" and picking
+        either would be a false merge (see resolve.py's module
+        docstring)."""
+        method = state["resolution"].method
+        if method == "alias_match":
+            return "extract"
+        if method == "ambiguous_multi_subject":
+            return "end"
+        return "classify_llm"
 
     def route_after_llm(state: PipelineState) -> str:
         """If even the LLM fallback couldn't resolve a subject, there is
@@ -231,7 +242,7 @@ def build_graph(  # pylint: disable=too-many-arguments,too-many-locals
     graph.add_conditional_edges(
         "classify_deterministic",
         route_after_classify,
-        {"extract": "extract", "classify_llm": "classify_llm"},
+        {"extract": "extract", "classify_llm": "classify_llm", "end": END},
     )
     graph.add_conditional_edges("classify_llm", route_after_llm, {"extract": "extract", "end": END})
     graph.add_edge("extract", "compare")

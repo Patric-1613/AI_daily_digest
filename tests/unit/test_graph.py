@@ -244,12 +244,28 @@ def test_subject_is_registered_even_when_no_facts_are_accepted() -> None:
     assert mistral_le_chat in store.known_subjects()
 
 
-def test_llm_fallback_resolves_when_deterministic_matching_fails() -> None:
+def test_llm_fallback_rejects_high_confidence_match_with_unsupported_evidence() -> None:
+    """Routing/plumbing test for the LLM fallback path, using the outcome
+    that's actually reachable once the grounding check is in place: a
+    high-confidence, catalogue-valid proposal with no textual evidence
+    naming the specific product is routed to the LLM (true residue, no
+    deterministic phrase match at all) and then rejected there, never
+    resolved. See test_resolve_llm.py for direct unit coverage of the
+    accept path itself, and resolve.py's module docstring for why a
+    genuinely *grounded* existing-subject match can never legitimately
+    reach this residue in the first place -- deterministic matching
+    already scans the same text with the same phrase rule, so if the
+    evidence were real, it would have matched there first."""
     store = FactStore()
     store.register_subject(OPENAI_GPT4O)  # known, but not findable by phrase match below
 
     def resolve_fake(system: str, prompt: str) -> ResolveLLMResponse:
-        return ResolveLLMResponse(company="OpenAI", product="GPT-4o", confidence=0.9)
+        return ResolveLLMResponse(
+            company="OpenAI",
+            product="GPT-4o",
+            supporting_quote="OpenAI released a new research paper today",
+            confidence=0.9,
+        )
 
     graph = build_graph(
         store,
@@ -263,13 +279,62 @@ def test_llm_fallback_resolves_when_deterministic_matching_fails() -> None:
     snapshot = _snapshot(
         TG_SNAP_AMB,
         TG_ITEM_AMBIGUOUS,
-        "The new model scored 71.2 on the ReasonBench suite.",
+        "OpenAI released a new research paper today.",
         datetime(2026, 8, 19, tzinfo=UTC),
     )
     result = graph.invoke({"item": item, "snapshot": snapshot})
 
-    assert result["subject"] == OPENAI_GPT4O
-    assert result["resolution"].method == "llm_resolved"
+    assert result["subject"] is None
+    assert result["resolution"].method == "llm_unsupported_subject_evidence"
+    assert result.get("facts", []) == []
+    assert result.get("claims", []) == []
+
+
+def test_multi_subject_item_never_reaches_the_llm_fallback() -> None:
+    """Orchestration regression: an item deterministically phrase-matching
+    two tracked subjects (Codex and ChatGPT) must end the run right after
+    classify_deterministic -- route_after_classify must never route it to
+    classify_llm. Asserted here by making the injected resolve_llm_call_fn
+    raise if it's ever invoked at all, not just by checking the final
+    subject/method -- a bug that routed to the LLM but then happened to
+    reject its answer would otherwise pass silently."""
+    store = FactStore()
+    chatgpt = Subject(company="OpenAI", product="ChatGPT")
+    codex = Subject(company="OpenAI", product="Codex")
+    alias_table = [
+        SubjectAlias(subject=chatgpt, aliases=[]),
+        SubjectAlias(subject=codex, aliases=[]),
+    ]
+
+    def resolve_llm_must_not_be_called(system: str, prompt: str) -> ResolveLLMResponse:
+        raise AssertionError(
+            "resolve_via_llm must never be called for an ambiguous_multi_subject item"
+        )
+
+    graph = build_graph(
+        store,
+        {},
+        batch_detected_at=TG_DETECTED_AT,
+        alias_table=alias_table,
+        resolve_llm_call_fn=resolve_llm_must_not_be_called,
+    )
+    item = _item(
+        TG_ITEM_UNKNOWN,
+        "How a researcher uses Codex and ChatGPT to search for new antimicrobial molecules",
+    )
+    snapshot = _snapshot(
+        TG_SNAP_UNKNOWN,
+        TG_ITEM_UNKNOWN,
+        "The lab uses Codex and ChatGPT to search genomes for antimicrobial candidates.",
+        datetime(2026, 8, 19, tzinfo=UTC),
+    )
+    result = graph.invoke({"item": item, "snapshot": snapshot})
+
+    assert result["subject"] is None
+    assert result["resolution"].method == "ambiguous_multi_subject"
+    assert set(result["resolution"].candidate_subjects) == {chatgpt, codex}
+    assert result.get("facts", []) == []
+    assert result.get("claims", []) == []
 
 
 def test_unresolvable_item_ends_early_with_no_facts_or_claims() -> None:

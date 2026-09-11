@@ -16,6 +16,8 @@ import pytest
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
 from ai_daily_digest.intelligence.db.repository import PostgresFactStore
 from ai_daily_digest.intelligence.extract_facts import FactExtractionResponse
+from ai_daily_digest.intelligence.resolve import SubjectAlias
+from ai_daily_digest.intelligence.resolve_llm import ResolveLLMResponse
 from ai_daily_digest.intelligence.run import (
     DigestRunEvaluation,
     DigestRunReport,
@@ -23,6 +25,7 @@ from ai_daily_digest.intelligence.run import (
     _emit_failure,
     _never_auto_publish_comparisons,
     _parse_args,
+    _resolve_and_extract_item,
     evaluate_digest_run,
     exit_code_for,
     main,
@@ -35,7 +38,14 @@ from ai_daily_digest.intelligence.run import (
     to_source_item,
 )
 from ai_daily_digest.shared.ids import new_id
-from ai_daily_digest.shared.schemas import Digest, DigestClaim, DigestStatus, Subject
+from ai_daily_digest.shared.schemas import (
+    Digest,
+    DigestClaim,
+    DigestStatus,
+    DocumentSnapshot,
+    SourceItem,
+    Subject,
+)
 from tests.uuid_samples import (
     CLAIM_1,
     CLAIM_2,
@@ -1556,3 +1566,150 @@ async def test_run_pipeline_processes_langchain_and_langgraph_snapshots(
     assert report.unresolved_snapshot_count == 0
     assert report.processed_snapshot_count == 2
     assert report.failed_snapshot_count == 0
+
+
+# ---------------------------------------------------------------------------
+# _resolve_and_extract_item -- the actual resolution/extraction step
+# `run_pipeline` runs per snapshot (this is the code path wired to the
+# `generate-digest` production entry point / Render cron, unlike
+# graph.py's LangGraph wiring). Direct unit tests, no DB needed.
+# ---------------------------------------------------------------------------
+
+
+def _source_item(item_id: uuid.UUID, title: str) -> SourceItem:
+    return SourceItem(
+        id=item_id,
+        dedupe_key=f"sha256:{item_id}",
+        source_id="openai_news",
+        publisher="OpenAI",
+        title=title,
+        canonical_url="https://openai.com/news/example",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+
+
+def _document_snapshot(snapshot_id: uuid.UUID, item_id: uuid.UUID, text: str) -> DocumentSnapshot:
+    return DocumentSnapshot(
+        id=snapshot_id,
+        source_item_id=item_id,
+        fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+        content_hash=f"sha256:{snapshot_id}",
+        content_text=text,
+    )
+
+
+def _no_facts(system: str, prompt: str) -> FactExtractionResponse:
+    return FactExtractionResponse(facts=[])
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_extract_item_skips_llm_for_multi_subject_item() -> None:
+    """Item 1 from the rehearsal: "Codex and ChatGPT" both phrase-match.
+    The LLM fallback must never be invoked at all -- asserted with a
+    call_fn that raises if it's ever called, not just by checking the
+    returned subject."""
+    chatgpt = Subject(company="OpenAI", product="ChatGPT")
+    codex = Subject(company="OpenAI", product="Codex")
+    alias_table = [
+        SubjectAlias(subject=chatgpt, aliases=[]),
+        SubjectAlias(subject=codex, aliases=[]),
+    ]
+
+    def resolve_llm_must_not_be_called(system: str, prompt: str) -> ResolveLLMResponse:
+        raise AssertionError("resolve_via_llm must never be called for a multi-subject item")
+
+    item_id = new_id()
+    item = _source_item(
+        item_id,
+        "How a researcher uses Codex and ChatGPT to search for new antimicrobial molecules",
+    )
+    snapshot = _document_snapshot(
+        new_id(),
+        item_id,
+        "The lab uses Codex and ChatGPT to search genomes for antimicrobial candidates.",
+    )
+
+    subject, facts = await _resolve_and_extract_item(
+        item,
+        snapshot,
+        set(),
+        alias_table,
+        resolve_llm_must_not_be_called,
+        _no_facts,
+    )
+
+    assert subject is None
+    assert facts == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_extract_item_rejects_unsupported_gpt4o_evidence() -> None:
+    """Regression test for the actual rehearsal failure at the
+    run_pipeline layer: the real government/policy item title and
+    description (fetched verbatim from https://openai.com/news/rss.xml),
+    with a fake LLM response proposing the catalogue-valid OpenAI/GPT-4o
+    at high confidence and a real, verbatim, company-only quote. Must
+    resolve to no subject, not silently merge onto GPT-4o."""
+    gpt4o = Subject(company="OpenAI", product="GPT-4o")
+    alias_table = [SubjectAlias(subject=gpt4o, aliases=["gpt4o", "gpt-4 omni"])]
+    description = (
+        "OpenAI and GSA will offer eligible federal, state, local, and tribal "
+        "governments $0 license fees, 50% off usage, and expanded cyber defense "
+        "support."
+    )
+
+    def resolve_fake(system: str, prompt: str) -> ResolveLLMResponse:
+        return ResolveLLMResponse(
+            company="OpenAI", product="GPT-4o", supporting_quote=description, confidence=0.85
+        )
+
+    item_id = new_id()
+    item = _source_item(
+        item_id,
+        "Expanding AI access and cyber defense for federal, state, local, and tribal governments",
+    )
+    snapshot = _document_snapshot(new_id(), item_id, description)
+
+    subject, facts = await _resolve_and_extract_item(
+        item,
+        snapshot,
+        set(),
+        alias_table,
+        resolve_fake,
+        _no_facts,
+    )
+
+    assert subject is None
+    assert facts == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_and_extract_item_resolves_gpt_live_1_without_llm() -> None:
+    """Item 5 from the rehearsal resolves deterministically -- the LLM
+    fallback must not even be invoked."""
+    gpt_live_1 = Subject(company="OpenAI", product="GPT-Live-1")
+    alias_table = [SubjectAlias(subject=gpt_live_1, aliases=[])]
+
+    def resolve_llm_must_not_be_called(system: str, prompt: str) -> ResolveLLMResponse:
+        raise AssertionError("resolve_via_llm must never be called for a deterministic match")
+
+    item_id = new_id()
+    item = _source_item(
+        item_id, "Build more natural voice experiences with GPT\u2011Live\u20111 in the API"
+    )
+    snapshot = _document_snapshot(
+        new_id(),
+        item_id,
+        "GPT\u2011Live\u20111 brings natural, full-duplex voice conversations to the API.",
+    )
+
+    subject, _facts = await _resolve_and_extract_item(
+        item,
+        snapshot,
+        set(),
+        alias_table,
+        resolve_llm_must_not_be_called,
+        _no_facts,
+    )
+
+    assert subject == gpt_live_1
