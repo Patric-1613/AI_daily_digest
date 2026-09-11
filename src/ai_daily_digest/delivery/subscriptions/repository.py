@@ -174,10 +174,12 @@ class SubscriptionRepository:
         verified = self._codec.verify(raw_token, expected_purpose=SubscriptionTokenPurpose.CONFIRM)
         now = self._clock()
         async with self._session.begin():
+            subscription_id = await self._token_subscription_id(verified.token_digest)
+            subscription = await self._locked_subscription(subscription_id)
             token = await self._locked_token(verified.token_digest)
-            subscription = await self._locked_subscription(token.subscription_id)
             token_is_invalid = (
-                token.key_id != verified.key_id
+                token.subscription_id != subscription.id
+                or token.key_id != verified.key_id
                 or token.purpose != verified.purpose.value
                 or token.used_at is not None
                 or token.revoked_at is not None
@@ -241,16 +243,21 @@ class SubscriptionRepository:
         )
         now = self._clock()
         async with self._session.begin():
+            subscription_id = await self._token_subscription_id(verified.token_digest)
+            subscription = await self._locked_subscription(subscription_id)
             token = await self._locked_token(verified.token_digest)
-            subscription = await self._locked_subscription(token.subscription_id)
-            if (
-                token.key_id != verified.key_id
+            token_is_invalid = (
+                token.subscription_id != subscription.id
+                or token.key_id != verified.key_id
                 or token.purpose != verified.purpose.value
                 or token.revoked_at is not None
-                or token.consent_generation != subscription.consent_generation
+            )
+            lifecycle_is_invalid = (
+                token.consent_generation != subscription.consent_generation
                 or subscription.status
                 not in {SubscriptionStatus.CONFIRMED.value, SubscriptionStatus.UNSUBSCRIBED.value}
-            ):
+            )
+            if token_is_invalid or lifecycle_is_invalid:
                 raise InvalidSubscriptionTokenError()
             if token.used_at is None:
                 token.used_at = now
@@ -344,6 +351,17 @@ class SubscriptionRepository:
             cast(Any, token_result).rowcount or 0,
             cast(Any, limit_result).rowcount or 0,
         )
+
+    async def _token_subscription_id(self, digest: str) -> uuid.UUID:
+        """Locate the parent before locks so every lifecycle path locks parent first."""
+        subscription_id = await self._session.scalar(
+            select(SubscriptionTokenModel.subscription_id).where(
+                SubscriptionTokenModel.token_digest == digest
+            )
+        )
+        if subscription_id is None:
+            raise InvalidSubscriptionTokenError()
+        return subscription_id
 
     async def _locked_token(self, digest: str) -> SubscriptionTokenModel:
         token = await self._session.scalar(
