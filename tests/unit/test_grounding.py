@@ -111,5 +111,25 @@ def test_value_not_supported_for_unrelated_non_numeric_phrase() -> None:
     assert value_supported_by_quote("MIT", "now licensed under Apache-2.0 terms") is False
 
 
+def test_value_supported_when_number_has_metric_multiplier() -> None:
+    assert value_supported_by_quote("100000", "introducing a 100K context window") is True
+    assert value_supported_by_quote("200000", "now supports 200k context window") is True
+    assert value_supported_by_quote("1000000", "scaling up to 1M tokens") is True
+
+
+def test_value_not_supported_when_number_is_truncated_prefix_of_multiplier_token() -> None:
+    """A fabricated value like '20' or '10' must not match a quote mentioning '200K' or '100K'
+    via regex backtracking on the trailing suffix."""
+    assert value_supported_by_quote("20", "supports a 200K context window") is False
+    assert value_supported_by_quote("10", "supports a 100K context window") is False
+    assert value_supported_by_quote("2", "supports a 200K context window") is False
+    assert value_supported_by_quote("1", "supports a 1M context window") is False
+
+
+def test_numbers_in_does_not_leak_backtracked_prefixes_from_multiplier_tokens() -> None:
+    assert numbers_in("supports a 200K context window") == set()
+    assert numbers_in("supports a 100K context window and 5 models") == {"5"}
+
+
 def test_empty_value_is_never_supported() -> None:
     assert value_supported_by_quote("", "any quote at all") is False

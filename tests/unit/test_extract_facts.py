@@ -1,6 +1,7 @@
 """Tests the plumbing (prompt rendering, grounding/confidence gates) with
 an injected fake call_fn — no network/API key needed."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
@@ -909,3 +910,282 @@ def test_extract_facts_malformed_truncated_content_handling() -> None:
     assert facts_nd[0].field == "context_window_tokens"
     assert facts_nd[0].disclosure_status == DisclosureStatus.NOT_DISCLOSED
     assert facts_nd[0].value is None
+
+
+def test_context_window_field_aliases_normalize_to_canonical() -> None:
+    """Proves the explicit reviewed closed set of context window field aliases
+    ('context_window', 'Context window', 'context window', 'context-window')
+    safely normalize to the canonical 'context_window_tokens' field."""
+    text = "Claude now supports a 100,000 token context window."
+    subject = Subject(company="Anthropic", product="Claude")
+    snap = _snapshot(text)
+
+    for alias in [
+        "context_window",
+        "Context window",
+        "context window",
+        "context-window",
+    ]:
+
+        def make_fake_call(field_name: str) -> Callable[[str, str], FactExtractionResponse]:
+            def fake_call(system: str, prompt: str) -> FactExtractionResponse:
+                return FactExtractionResponse(
+                    facts=[
+                        FactCandidate(
+                            field=field_name,
+                            value="100000",
+                            quoted_span="Claude now supports a 100,000 token context window.",
+                            confidence=0.95,
+                        )
+                    ]
+                )
+
+            return fake_call
+
+        facts = extract_facts(subject, snap, call_fn=make_fake_call(alias))
+        assert len(facts) == 1, f"Failed for approved alias {alias}"
+        assert facts[0].field == "context_window_tokens"
+        assert facts[0].value == "100000"
+
+
+def test_near_miss_and_unknown_fields_remain_rejected() -> None:
+    """Proves unmapped, near-miss, or fabricated fields remain strictly rejected
+    under fail-closed closed-schema rules."""
+    text = "Model has 70B parameters, 100k context length and safety score 9.5."
+    subject = Subject(company="Anthropic", product="Claude")
+    snap = _snapshot(text)
+
+    for unapproved in [
+        "context_window_size",
+        "context_window_length",
+        "max_context",
+        "window_size",
+        "context",
+        "weights",
+        "model_weights",
+        "parameter_count",
+        "safety_score",
+        "training_compute",
+    ]:
+
+        def make_fake_call(field_name: str) -> Callable[[str, str], FactExtractionResponse]:
+            def fake_call(system: str, prompt: str) -> FactExtractionResponse:
+                return FactExtractionResponse(
+                    facts=[
+                        FactCandidate(
+                            field=field_name,
+                            value="100000",
+                            quoted_span="100k context length",
+                            confidence=0.99,
+                        )
+                    ]
+                )
+
+            return fake_call
+
+        facts = extract_facts(subject, snap, call_fn=make_fake_call(unapproved))
+        assert facts == [], f"Unapproved field {unapproved} was not rejected"
+
+
+def test_duplicate_same_field_candidates_safely_deduplicated() -> None:
+    """Proves an extraction response containing 'context_window' alias and
+    'context_window_tokens' with equivalent formats ('200K', '200,000', '200000')
+    safely canonicalizes and deduplicates to 1 fact rather than conflicting."""
+    text = "Claude 2.1 provides a 200,000 token context window."
+    subject = Subject(company="Anthropic", product="Claude")
+    snap = _snapshot(text)
+
+    def fake_call(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window",
+                    value="200K",
+                    quoted_span="Claude 2.1 provides a 200,000 token context window.",
+                    confidence=0.95,
+                ),
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="200,000",
+                    quoted_span="Claude 2.1 provides a 200,000 token context window.",
+                    confidence=0.95,
+                ),
+                FactCandidate(
+                    field="context-window",
+                    value="200000",
+                    quoted_span="Claude 2.1 provides a 200,000 token context window.",
+                    confidence=0.95,
+                ),
+            ]
+        )
+
+    facts = extract_facts(subject, snap, call_fn=fake_call)
+    assert len(facts) == 1
+    assert facts[0].field == "context_window_tokens"
+    assert facts[0].value == "200000"
+
+
+def test_context_window_value_canonicalization_formats() -> None:
+    """Proves various valid textual context window formats ('100K', '200k', '128k',
+    '1M', '100,000', '200000') all canonicalize to pure integer strings."""
+    test_cases = [
+        ("100K", "100000"),
+        ("100k", "100000"),
+        ("200K", "200000"),
+        ("200k", "200000"),
+        ("128k", "128000"),
+        ("256K", "256000"),
+        ("1M", "1000000"),
+        ("2m", "2000000"),
+        ("100,000", "100000"),
+        ("200,000", "200000"),
+        ("100000", "100000"),
+    ]
+    for raw_val, expected_val in test_cases:
+        cand = FactCandidate(
+            field="context_window",
+            value=raw_val,
+            quoted_span="large context window",
+            confidence=0.95,
+        )
+        assert cand.field == "context_window_tokens"
+        assert cand.value == expected_val, (
+            f"Failed for {raw_val}: expected {expected_val}, got {cand.value}"
+        )
+
+
+def test_context_window_invalid_values_fail_closed() -> None:
+    """Proves malformed, boolean, negative, float, and ambiguous context window values
+    are rejected fail-closed during validation."""
+    invalid_cases = [
+        "true",
+        "false",
+        "True",
+        "False",
+        "-100",
+        "-100000",
+        "-100k",
+        "100.5",
+        "100.0",
+        "100B",
+        "100MB",
+        "unknown",
+        "none",
+        "",
+        "abc",
+    ]
+    for invalid_val in invalid_cases:
+        with pytest.raises((ValueError, ValidationError)):
+            FactCandidate(
+                field="context_window",
+                value=invalid_val,
+                quoted_span="context window",
+                confidence=0.95,
+            )
+
+
+def test_conflicting_same_field_candidates_fail_closed() -> None:
+    """Proves an extraction response containing both 'context_window' and
+    'context_window_tokens' with conflicting values fails closed by dropping both."""
+    text = "Claude supports 100,000 or 200,000 token context window."
+    subject = Subject(company="Anthropic", product="Claude")
+    snap = _snapshot(text)
+
+    def fake_call_conflicting_values(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window",
+                    value="100K",
+                    quoted_span="Claude supports 100,000",
+                    confidence=0.95,
+                ),
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="200K",
+                    quoted_span="200,000 token context window",
+                    confidence=0.95,
+                ),
+            ]
+        )
+
+    facts = extract_facts(subject, snap, call_fn=fake_call_conflicting_values)
+    assert facts == [], "Conflicting value candidates were not dropped"
+
+
+def test_conflicting_disclosure_status_candidates_fail_closed() -> None:
+    """Proves an extraction response containing both disclosed and not_disclosed
+    candidates for the same field fails closed by dropping both."""
+    text = (
+        "Context window is 100,000 tokens. Context window specifications have not been disclosed."
+    )
+    subject = Subject(company="Anthropic", product="Claude")
+    snap = _snapshot(text)
+
+    def fake_call_conflicting_disclosure(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window",
+                    value="100K",
+                    quoted_span="Context window is 100,000 tokens",
+                    confidence=0.95,
+                ),
+                FactCandidate(
+                    field="context_window_tokens",
+                    value=None,
+                    disclosure_status=DisclosureStatus.NOT_DISCLOSED,
+                    quoted_span="Context window specifications have not been disclosed",
+                    confidence=0.95,
+                ),
+            ]
+        )
+
+    facts = extract_facts(subject, snap, call_fn=fake_call_conflicting_disclosure)
+    assert facts == [], "Conflicting disclosure candidates were not dropped"
+
+
+def test_anthropic_100k_and_200k_context_fact_extraction() -> None:
+    """Deterministic regression test for Anthropic 100K and 200K announcement fixtures
+    where LLM returns '100K' or '200K'."""
+    subject = Subject(company="Anthropic", product="Claude")
+
+    # 100K extraction from "100K"
+    snap_100k = _snapshot("Claude now supports a 100,000 token context window.")
+
+    def fake_call_100k(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window",
+                    value="100K",
+                    quoted_span="Claude now supports a 100,000 token context window.",
+                    confidence=0.98,
+                )
+            ]
+        )
+
+    facts_100k = extract_facts(subject, snap_100k, call_fn=fake_call_100k)
+    assert len(facts_100k) == 1
+    assert facts_100k[0].field == "context_window_tokens"
+    assert facts_100k[0].value == "100000"
+
+    # 200K extraction from "200K"
+    snap_200k = _snapshot("Claude 2.1 provides a 200,000 token context window.")
+
+    def fake_call_200k(system: str, prompt: str) -> FactExtractionResponse:
+        return FactExtractionResponse(
+            facts=[
+                FactCandidate(
+                    field="context_window_tokens",
+                    value="200K",
+                    quoted_span="Claude 2.1 provides a 200,000 token context window.",
+                    confidence=0.98,
+                )
+            ]
+        )
+
+    facts_200k = extract_facts(subject, snap_200k, call_fn=fake_call_200k)
+    assert len(facts_200k) == 1
+    assert facts_200k[0].field == "context_window_tokens"
+    assert facts_200k[0].value == "200000"
