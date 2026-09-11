@@ -7,6 +7,7 @@ import { fetchUpdatesPage, mergeUpdates, UpdatesApiError } from "./api/updates";
 import type { UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
 import { UpdatesFeed } from "./UpdatesFeed";
+import { SubscribeForm } from "./Subscriptions";
 
 const models = [
   { name: "Claude", icon: "✦", colors: ["#7B5CFF", "#B45CFF"] },
@@ -165,11 +166,7 @@ export default function App() {
             <option value="yesterday">Yesterday</option>
             <option value="week">This week</option>
           </select>
-          <div className="subscribeField">
-            <label className="srOnly" htmlFor="email">Email address</label>
-            <input id="email" type="email" placeholder="you@example.com" />
-            <button type="button">Subscribe</button>
-          </div>
+          <SubscribeForm />
         </div>
       </header>
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from ai_daily_digest.delivery.api.pagination import MIN_SIGNING_KEY_BYTES
+from ai_daily_digest.delivery.subscriptions.tokens import SubscriptionTokenEnvironment
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
@@ -44,12 +45,58 @@ def _validate_frontend_origin(value: str) -> str:
 
 
 @dataclass(frozen=True)
+class SubscriptionSecuritySettings:
+    environment: SubscriptionTokenEnvironment
+    confirmation_key_id: str
+    confirmation_key: bytes = field(repr=False)
+    unsubscribe_key_id: str
+    unsubscribe_key: bytes = field(repr=False)
+    rate_limit_key: bytes = field(repr=False)
+
+
+def _subscription_security(values: Mapping[str, str]) -> SubscriptionSecuritySettings | None:
+    names = (
+        "SUBSCRIPTION_TOKEN_ENVIRONMENT",
+        "SUBSCRIPTION_CONFIRM_KEY_ID",
+        "SUBSCRIPTION_CONFIRM_KEY",
+        "SUBSCRIPTION_UNSUBSCRIBE_KEY_ID",
+        "SUBSCRIPTION_UNSUBSCRIBE_KEY",
+        "SUBSCRIPTION_RATE_LIMIT_KEY",
+    )
+    configured = {name: values.get(name, "").strip() for name in names}
+    if not any(configured.values()):
+        return None
+    if any(not value for value in configured.values()):
+        raise ValueError("subscription security configuration is incomplete")
+    try:
+        environment = SubscriptionTokenEnvironment(configured["SUBSCRIPTION_TOKEN_ENVIRONMENT"])
+    except ValueError as exc:
+        raise ValueError("SUBSCRIPTION_TOKEN_ENVIRONMENT is invalid") from exc
+    keys = (
+        configured["SUBSCRIPTION_CONFIRM_KEY"].encode(),
+        configured["SUBSCRIPTION_UNSUBSCRIBE_KEY"].encode(),
+        configured["SUBSCRIPTION_RATE_LIMIT_KEY"].encode(),
+    )
+    if any(len(key) < MIN_SIGNING_KEY_BYTES for key in keys):
+        raise ValueError("subscription security keys must each be at least 32 bytes")
+    return SubscriptionSecuritySettings(
+        environment=environment,
+        confirmation_key_id=configured["SUBSCRIPTION_CONFIRM_KEY_ID"],
+        confirmation_key=keys[0],
+        unsubscribe_key_id=configured["SUBSCRIPTION_UNSUBSCRIBE_KEY_ID"],
+        unsubscribe_key=keys[1],
+        rate_limit_key=keys[2],
+    )
+
+
+@dataclass(frozen=True)
 class DeliverySettings:
     """Deployment settings loaded explicitly when the Uvicorn factory runs."""
 
     frontend_origin: str
     docs_enabled: bool = True
     pagination_cursor_secret: bytes | None = field(default=None, repr=False)
+    subscription_security: SubscriptionSecuritySettings | None = field(default=None, repr=False)
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> DeliverySettings:
@@ -75,4 +122,5 @@ class DeliverySettings:
             frontend_origin=_validate_frontend_origin(raw_origin),
             docs_enabled=docs_enabled,
             pagination_cursor_secret=cursor_secret,
+            subscription_security=_subscription_security(values),
         )

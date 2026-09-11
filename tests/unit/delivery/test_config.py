@@ -29,6 +29,55 @@ def test_cursor_secret_is_optional_until_a_repository_is_configured() -> None:
 
     assert settings.docs_enabled is True
     assert settings.pagination_cursor_secret is None
+    assert settings.subscription_security is None
+
+
+def test_subscription_security_configuration_is_all_or_nothing_and_secret_safe() -> None:
+    confirmation_secret = "c" * 32
+    unsubscribe_secret = "u" * 32
+    rate_limit_secret = "r" * 32
+    settings = DeliverySettings.from_environment(
+        {
+            "FRONTEND_ORIGIN": "https://ai-daily-digest.onrender.com",
+            "SUBSCRIPTION_TOKEN_ENVIRONMENT": "prod",
+            "SUBSCRIPTION_CONFIRM_KEY_ID": "prod-confirm-2026-09",
+            "SUBSCRIPTION_CONFIRM_KEY": confirmation_secret,
+            "SUBSCRIPTION_UNSUBSCRIBE_KEY_ID": "prod-unsubscribe-2026-09",
+            "SUBSCRIPTION_UNSUBSCRIBE_KEY": unsubscribe_secret,
+            "SUBSCRIPTION_RATE_LIMIT_KEY": rate_limit_secret,
+        }
+    )
+
+    security = settings.subscription_security
+    assert security is not None
+    assert security.confirmation_key_id == "prod-confirm-2026-09"
+    assert security.unsubscribe_key_id == "prod-unsubscribe-2026-09"
+    assert confirmation_secret not in repr(settings)
+    assert unsubscribe_secret not in repr(settings)
+    assert rate_limit_secret not in repr(settings)
+
+
+def test_partial_or_weak_subscription_security_configuration_fails_closed() -> None:
+    with pytest.raises(ValueError, match="incomplete"):
+        DeliverySettings.from_environment(
+            {
+                "FRONTEND_ORIGIN": "https://example.com",
+                "SUBSCRIPTION_TOKEN_ENVIRONMENT": "prod",
+            }
+        )
+
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        DeliverySettings.from_environment(
+            {
+                "FRONTEND_ORIGIN": "https://example.com",
+                "SUBSCRIPTION_TOKEN_ENVIRONMENT": "prod",
+                "SUBSCRIPTION_CONFIRM_KEY_ID": "confirm",
+                "SUBSCRIPTION_CONFIRM_KEY": "short",
+                "SUBSCRIPTION_UNSUBSCRIBE_KEY_ID": "unsubscribe",
+                "SUBSCRIPTION_UNSUBSCRIBE_KEY": "short",
+                "SUBSCRIPTION_RATE_LIMIT_KEY": "short",
+            }
+        )
 
 
 @pytest.mark.parametrize(

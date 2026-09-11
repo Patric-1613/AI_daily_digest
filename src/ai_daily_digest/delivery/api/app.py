@@ -15,6 +15,7 @@ from ai_daily_digest.delivery.api.dependencies import (
     ReadinessProbe,
     ReadinessRegistry,
     SourceItemFeedRepositoryFactory,
+    SubscriptionServiceFactory,
     build_readiness_registry,
 )
 from ai_daily_digest.delivery.api.errors import (
@@ -25,7 +26,9 @@ from ai_daily_digest.delivery.api.errors import (
 from ai_daily_digest.delivery.api.pagination import CursorCodec
 from ai_daily_digest.delivery.api.routes.digests import router as digests_router
 from ai_daily_digest.delivery.api.routes.health import router as health_router
+from ai_daily_digest.delivery.api.routes.subscriptions import router as subscriptions_router
 from ai_daily_digest.delivery.api.routes.updates import router as updates_router
+from ai_daily_digest.delivery.subscriptions.service import SubscriptionService
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.repositories import DigestFeedRepository, SourceItemFeedRepository
 
@@ -105,6 +108,8 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     source_item_feed_repository_factory: SourceItemFeedRepositoryFactory | None = None,
     digest_feed_repository: DigestFeedRepository | None = None,
     digest_feed_repository_factory: DigestFeedRepositoryFactory | None = None,
+    subscription_service: SubscriptionService | None = None,
+    subscription_service_factory: SubscriptionServiceFactory | None = None,
     cursor_codec: CursorCodec | None = None,
     cursor_signing_key: bytes | None = None,
     frontend_origin: str | None = None,
@@ -150,10 +155,22 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
         repository_factory=digest_feed_repository_factory,
         database_readiness_probe=database_readiness_probe,
     )
+    if subscription_service is not None and subscription_service_factory is not None:
+        raise ValueError(
+            "configure either a fixed or request-scoped subscription service, not both"
+        )
+    if subscription_service_factory is not None and database_session_factory is None:
+        raise ValueError(
+            "database_session_factory is required for the subscription service factory"
+        )
+    subscription_is_configured = (
+        subscription_service is not None or subscription_service_factory is not None
+    )
     if (
         database_session_factory is not None
         and source_item_feed_repository_factory is None
         and digest_feed_repository_factory is None
+        and subscription_service_factory is None
     ):
         raise ValueError("database_session_factory must be configured with a repository factory")
 
@@ -185,6 +202,9 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
     app.state.source_item_feed_repository_factory = source_item_feed_repository_factory
     app.state.digest_feed_repository = digest_feed_repository
     app.state.digest_feed_repository_factory = digest_feed_repository_factory
+    app.state.subscription_service = subscription_service
+    app.state.subscription_service_factory = subscription_service_factory
+    app.state.frontend_origin = frontend_origin
 
     if frontend_origin is not None:
         app.add_middleware(
@@ -235,4 +255,6 @@ def create_app(  # pylint: disable=too-many-arguments,too-many-positional-argume
         app.include_router(updates_router)
     if digest_repository_is_configured:
         app.include_router(digests_router)
+    if subscription_is_configured:
+        app.include_router(subscriptions_router)
     return app

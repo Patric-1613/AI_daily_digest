@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ai_daily_digest.delivery.api.app import API_TITLE, API_VERSION, create_app
+from ai_daily_digest.delivery.subscriptions.service import SubscriptionService
 from ai_daily_digest.shared.repositories import DigestFeedRepository, SourceItemFeedRepository
 
 pytestmark = pytest.mark.contract
@@ -29,6 +30,7 @@ def _full_app() -> Any:
     return create_app(
         source_item_feed_repository=AsyncMock(spec=SourceItemFeedRepository),
         digest_feed_repository=AsyncMock(spec=DigestFeedRepository),
+        subscription_service=AsyncMock(spec=SubscriptionService),
         cursor_signing_key=_TEST_KEY,
     )
 
@@ -70,11 +72,17 @@ def test_only_implemented_paths_appear_in_openapi() -> None:
         "/v1/health/ready",
         "/v1/updates",
         "/v1/digests",
+        "/v1/subscriptions",
+        "/v1/subscriptions/confirm",
+        "/v1/subscriptions/unsubscribe",
     }
     assert set(schema["paths"]["/v1/health/live"]) == {"get"}
     assert set(schema["paths"]["/v1/health/ready"]) == {"get"}
     assert set(schema["paths"]["/v1/updates"]) == {"get"}
     assert set(schema["paths"]["/v1/digests"]) == {"get"}
+    assert set(schema["paths"]["/v1/subscriptions"]) == {"post"}
+    assert set(schema["paths"]["/v1/subscriptions/confirm"]) == {"post"}
+    assert set(schema["paths"]["/v1/subscriptions/unsubscribe"]) == {"post"}
 
 
 def test_operation_ids_are_explicit_unique_and_stable_snake_case() -> None:
@@ -86,6 +94,9 @@ def test_operation_ids_are_explicit_unique_and_stable_snake_case() -> None:
         "get_health_ready",
         "get_updates",
         "get_digests",
+        "request_subscription",
+        "confirm_subscription",
+        "unsubscribe_subscription",
     }
     assert len(operation_ids) == len(set(operation_ids))
     assert all(re.fullmatch(r"[a-z][a-z0-9_]*", operation_id) for operation_id in operation_ids)
@@ -107,6 +118,9 @@ def test_schema_component_names_and_responses_are_stable() -> None:
         "ReadyResponse",
         "UpdateSummary",
         "Uuid7Id",
+        "SubscriptionMessage",
+        "SubscriptionRequest",
+        "SubscriptionTokenRequest",
     }
     ready_responses = schema["paths"]["/v1/health/ready"]["get"]["responses"]
     assert ready_responses["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
@@ -143,6 +157,7 @@ def test_interactive_docs_flag_does_not_change_executable_openapi() -> None:
         == create_app(
             source_item_feed_repository=AsyncMock(spec=SourceItemFeedRepository),
             digest_feed_repository=AsyncMock(spec=DigestFeedRepository),
+            subscription_service=AsyncMock(spec=SubscriptionService),
             cursor_signing_key=_TEST_KEY,
             docs_enabled=False,
         ).openapi()
