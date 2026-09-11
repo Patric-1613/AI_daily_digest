@@ -74,11 +74,17 @@ def numbers_in(text: str) -> set[str]:
     part of a product name/version are not numbers for this purpose --
     glued directly to a letter ("o1"), or hyphen-connected with letters
     on either side ("GPT-4", "GPT-4o", "GPT-4.5") -- see
-    _NUMBER_TOKEN_RE and _COMPOUND_PRODUCT_NAME_RE. Used to compare "what
-    numbers does this claim assert" against "what numbers does this
-    evidence actually contain"."""
+    _NUMBER_TOKEN_RE and _COMPOUND_PRODUCT_NAME_RE. Multiplier-suffixed
+    tokens ("100K", "1M") are also excluded here to prevent backtracking
+    from extracting spurious truncated prefixes ("10", "20") -- see
+    _MULTIPLIER_TOKEN_RE. Used to compare "what numbers does this claim
+    assert" against "what numbers does this evidence actually contain"."""
     stripped = _NUMBER_FORMATTING_RE.sub("", text)
-    excluded_spans = [match.span() for match in _COMPOUND_PRODUCT_NAME_RE.finditer(stripped)]
+    excluded_spans = [
+        match.span()
+        for pattern in (_COMPOUND_PRODUCT_NAME_RE, _MULTIPLIER_TOKEN_RE)
+        for match in pattern.finditer(stripped)
+    ]
     numbers: set[str] = set()
     for match in _NUMBER_TOKEN_RE.finditer(stripped):
         if any(start <= match.start() and match.end() <= end for start, end in excluded_spans):
