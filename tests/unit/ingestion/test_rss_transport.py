@@ -102,6 +102,21 @@ async def test_approved_content_types_are_accepted(content_type: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_configured_html_media_type_is_accepted_for_article_fetcher() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html></html>", headers={"content-type": "text/html"})
+
+    fetcher = HttpxFetcher(
+        transport=httpx.MockTransport(handler),
+        approved_media_types=frozenset({"text/html"}),
+    )
+
+    response = await _fetch(fetcher)
+
+    assert response.body == b"<html></html>"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("content_type", ["text/html; charset=utf-8", "application/json", ""])
 async def test_unapproved_content_type_is_permanent(content_type: str) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
