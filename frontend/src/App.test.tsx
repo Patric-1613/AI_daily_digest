@@ -74,6 +74,17 @@ afterEach(() => {
 describe("AI Daily Digest shell", () => {
   it("uses the documented local API origin by default", () => {
     expect(publicConfig.apiBaseUrl).toBe("http://localhost:8000");
+    expect(publicConfig.subscriptionsEnabled).toBe(false);
+  });
+
+  it("hides subscription controls by default and renders them only when enabled", () => {
+    const disabledHtml = renderToStaticMarkup(<App />);
+    const enabledHtml = renderToStaticMarkup(<App subscriptionsEnabled />);
+
+    expect(disabledHtml).not.toContain("you@example.com");
+    expect(disabledHtml).not.toContain(">Subscribe<");
+    expect(enabledHtml).toContain("you@example.com");
+    expect(enabledHtml).toContain(">Subscribe<");
   });
 
   it("renders the core editorial sections", () => {

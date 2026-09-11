@@ -89,6 +89,32 @@ def test_production_lifespan_disposes_the_single_engine(monkeypatch: pytest.Monk
     assert engine.dispose_calls == 1
 
 
+def test_production_factory_keeps_subscription_routes_disabled_until_delivery_and_proxy_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_production(monkeypatch)
+    confirmation_secret = "c" * 32
+    unsubscribe_secret = "u" * 32
+    rate_limit_secret = "r" * 32
+    monkeypatch.setenv("SUBSCRIPTION_TOKEN_ENVIRONMENT", "prod")
+    monkeypatch.setenv("SUBSCRIPTION_CONFIRM_KEY_ID", "prod-confirm-2026-09")
+    monkeypatch.setenv("SUBSCRIPTION_CONFIRM_KEY", confirmation_secret)
+    monkeypatch.setenv("SUBSCRIPTION_UNSUBSCRIBE_KEY_ID", "prod-unsubscribe-2026-09")
+    monkeypatch.setenv("SUBSCRIPTION_UNSUBSCRIBE_KEY", unsubscribe_secret)
+    monkeypatch.setenv("SUBSCRIPTION_RATE_LIMIT_KEY", rate_limit_secret)
+
+    app = create_production_app()
+
+    paths = app.openapi()["paths"]
+    assert "/v1/subscriptions" not in paths
+    assert "/v1/subscriptions/confirm" not in paths
+    assert "/v1/subscriptions/unsubscribe" not in paths
+    assert app.state.subscription_service_factory is None
+    assert confirmation_secret not in repr(app.state)
+    assert unsubscribe_secret not in repr(app.state)
+    assert rate_limit_secret not in repr(app.state)
+
+
 def test_cors_allows_only_configured_origin_and_never_allows_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

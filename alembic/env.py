@@ -21,12 +21,15 @@ from logging.config import fileConfig
 from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, async_engine_from_config
 
+import ai_daily_digest.delivery.subscriptions.models
+
 # Import every approved module's ORM model modules here, even though
 # this name is otherwise unused in this file -- the import's only job is
 # registering each module's tables against shared.db.metadata (below)
 # before Alembic compares or applies anything. A future
 # intelligence/db/models.py joins this list under its own ADR + PR.
-import ai_daily_digest.ingestion.db.models  # noqa: F401
+import ai_daily_digest.ingestion.db.models
+import ai_daily_digest.intelligence.db.models  # noqa: F401
 from ai_daily_digest.shared.config import DatabaseConfig
 from ai_daily_digest.shared.db.metadata import metadata as target_metadata
 from alembic import context

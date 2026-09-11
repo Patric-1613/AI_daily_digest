@@ -44,5 +44,10 @@ def create_production_app() -> FastAPI:
         database_session_factory=session_factory,
         source_item_feed_repository_factory=PostgresSourceItemRepository,
         digest_feed_repository_factory=PostgresDigestFeedRepository,
+        # Fail closed until issue #53 supplies a confirmation-delivery adapter and
+        # configures Uvicorn/Render with an explicit trusted-proxy allowlist. Without
+        # both, the API would either discard the only raw confirmation capability or
+        # rate-limit every reader under Render's connection-peer identity.
+        subscription_service_factory=None,
         lifespan=lifespan,
     )

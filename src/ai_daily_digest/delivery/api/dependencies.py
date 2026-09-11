@@ -14,10 +14,12 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_daily_digest.delivery.api.pagination import CursorCodec
+from ai_daily_digest.delivery.subscriptions.service import SubscriptionService
 from ai_daily_digest.shared.repositories import DigestFeedRepository, SourceItemFeedRepository
 
 type SourceItemFeedRepositoryFactory = Callable[[AsyncSession], SourceItemFeedRepository]
 type DigestFeedRepositoryFactory = Callable[[AsyncSession], DigestFeedRepository]
+type SubscriptionServiceFactory = Callable[[AsyncSession], SubscriptionService]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -167,3 +169,23 @@ async def get_digest_feed_repository(request: Request) -> AsyncIterator[DigestFe
         raise RuntimeError("DigestFeedRepository is not configured on the application state")
     async with session_factory() as session:
         yield repository_factory(session)
+
+
+async def get_subscription_service(request: Request) -> AsyncIterator[SubscriptionService]:
+    """Yield a fixed test service or a request-scoped production service."""
+    service = getattr(request.app.state, "subscription_service", None)
+    if service is not None:
+        yield cast(SubscriptionService, service)
+        return
+    session_factory = cast(
+        async_sessionmaker[AsyncSession] | None,
+        getattr(request.app.state, "database_session_factory", None),
+    )
+    service_factory = cast(
+        SubscriptionServiceFactory | None,
+        getattr(request.app.state, "subscription_service_factory", None),
+    )
+    if session_factory is None or service_factory is None:
+        raise RuntimeError("SubscriptionService is not configured on the application state")
+    async with session_factory() as session:
+        yield service_factory(session)

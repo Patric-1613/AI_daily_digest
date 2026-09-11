@@ -7,6 +7,7 @@ import { fetchUpdatesPage, mergeUpdates, UpdatesApiError } from "./api/updates";
 import type { UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
 import { UpdatesFeed } from "./UpdatesFeed";
+import { SubscribeForm } from "./Subscriptions";
 
 const models = [
   { name: "Claude", icon: "✦", colors: ["#7B5CFF", "#B45CFF"] },
@@ -17,7 +18,13 @@ const models = [
   { name: "Grok", icon: "𝕏", colors: ["#F58025", "#D84A5C"] },
 ];
 
-export default function App() {
+type AppProps = {
+  subscriptionsEnabled?: boolean;
+};
+
+export default function App({
+  subscriptionsEnabled = publicConfig.subscriptionsEnabled,
+}: AppProps) {
   const [digests, setDigests] = useState<DigestSummary[]>([]);
   const [digestNextCursor, setDigestNextCursor] = useState<string | null>(null);
   const [digestsInitialLoading, setDigestsInitialLoading] = useState(true);
@@ -165,11 +172,7 @@ export default function App() {
             <option value="yesterday">Yesterday</option>
             <option value="week">This week</option>
           </select>
-          <div className="subscribeField">
-            <label className="srOnly" htmlFor="email">Email address</label>
-            <input id="email" type="email" placeholder="you@example.com" />
-            <button type="button">Subscribe</button>
-          </div>
+          {subscriptionsEnabled ? <SubscribeForm /> : null}
         </div>
       </header>
 
