@@ -134,6 +134,12 @@ collect-openai-rss = "ai_daily_digest.ingestion.rss.run:main_openai_news"
 # selected source ok, 1 = partial, 2 = config/selection failure or total
 # failure. Safe for a cloud-cron worker; not a --due scheduler.
 collect-rss-batch = "ai_daily_digest.ingestion.rss.batch:main"
+# Guarded operator command for an ordered list of first-party announcement
+# pages. URLs must remain on the selected source's configured host allowlist;
+# the command parses and persists real HTML article content through the same
+# immutable ingestion write path as RSS. It is a manual backfill tool, not a
+# crawler or scheduler.
+collect-official-article = "ai_daily_digest.ingestion.article.run:main"
 # Intelligence production command for one daily digest generation run
 generate-digest = "ai_daily_digest.intelligence.run:main"
 

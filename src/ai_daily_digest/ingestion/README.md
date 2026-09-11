@@ -168,6 +168,41 @@ that owns it". A `collection_runs` table + `--due` filtering is a
 follow-up that starts with that schema decision; this slice deliberately
 adds neither.
 
+### Explicit official-article backfill (`collect-official-article`)
+
+The operator-only `collect-official-article` command collects a deliberately
+selected, ordered list of first-party announcement pages. It exists for a
+controlled historical rehearsal in which an older announcement establishes a
+baseline and a later announcement can produce a real change. It is not a
+crawler, URL-discovery mechanism, scheduled collector, or path for manually
+entered facts.
+
+Every `--url` must belong to the selected registered source's host allowlist.
+The production fetcher applies the same HTTPS, redirect-hop, timeout, retry,
+response-size, and secret-safe logging controls as RSS, while accepting only
+HTML media types. The deterministic parser requires a title, substantive body,
+and publication timestamp. The page's canonical URL is independently checked
+against the same allowlist before the existing immutable ingestion write path
+is used. No LLM participates in collection, and there is no database schema
+change.
+
+Supply pages oldest first so `fetched_at` preserves baseline order. For the
+initial Anthropic context-window rehearsal:
+
+```bash
+DATABASE_URL=postgresql+psycopg://USER:PW@HOST:5432/DB \
+  uv run collect-official-article \
+  --source-id anthropic_news \
+  --url https://www.anthropic.com/news/100k-context-windows \
+  --url https://www.anthropic.com/news/claude-2-1
+```
+
+The command emits one JSON report line. Exit `0` means every page was
+processed; `1` means partial success; `2` means selection/configuration failure
+or that every page failed. Re-running unchanged pages is safe and reports them
+as unchanged. Intelligence and publication remain separate, safety-gated
+steps; successful collection does not promise that a claim will be published.
+
 ### Limitations (this slice)
 
 - **RSS 2.0 only.** Atom and other feed formats are out of scope; the
@@ -176,12 +211,14 @@ adds neither.
   several (the verified set, or an explicit `--source-id` selection) in
   one bounded-concurrency pass. Neither reads `cadence_minutes`;
   cadence-aware `--due` selection is deferred (see "Batch collection").
-- **No article-body fetching.** `content_text` is the feed entry summary
-  (`<description>` / `<content:encoded>`), never the fetched article page.
+- **RSS does not fetch article bodies.** Its `content_text` remains the feed
+  entry summary (`<description>` / `<content:encoded>`). The separate manual
+  article command fetches only URLs explicitly supplied by an operator.
 - **No raw-object storage.** `DocumentSnapshot.raw_location` stays `NULL`
   until immutable raw storage exists.
-- **HTML / changelog / GitHub-API sources are not implemented.** Their
-  `SourceType` members exist (ADR 0009 §5.1) but no adapter does.
+- **No general HTML/changelog crawler or GitHub-API collector.** Their
+  `SourceType` members exist (ADR 0009 §5.1); the article backfill is a narrow
+  explicit-URL adapter, not recurring source automation.
 - **Only three RSS sources are verified.** Other `type: rss` entries are
   accepted by `collect-rss` but unverified — see "Verified source IDs".
 - **Registry `subject` is not resolved.** See "Registry subject and
