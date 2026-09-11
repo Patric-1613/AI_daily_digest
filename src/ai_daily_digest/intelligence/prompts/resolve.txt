@@ -6,7 +6,15 @@ treat every candidate as genuinely ambiguous.
 
 Rules:
 - Choose an existing (company, product) pair ONLY if you are confident the
-  item is about that specific tracked subject.
+  item is about that specific tracked subject AND you can quote a short
+  verbatim excerpt from the item title/excerpt that names that specific
+  product — not just its company. A quote naming only the company (e.g.
+  an announcement about the company's policy, partnerships, or business in
+  general, with no specific product mentioned) is not enough; leave
+  "supporting_quote" null and either propose a new subject or use a low
+  confidence score instead.
+- "supporting_quote" must be copied exactly from the item title or
+  excerpt — do not paraphrase or summarize it.
 - If it is plausibly a new subject not yet tracked, propose one — do not
   force-fit it onto an existing pair.
 - A false merge (matching two different things as one) is worse than
@@ -20,6 +28,7 @@ Output schema:
   "company": "<existing company name, or null>",
   "product": "<existing product name, or null>",
   "new_subject_proposal": "<proposed 'Company: Product' name, or null>",
+  "supporting_quote": "<verbatim excerpt naming the specific product, or null>",
   "confidence": <float 0.0-1.0>
 }
 

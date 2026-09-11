@@ -2,7 +2,12 @@ import uuid
 from datetime import UTC, datetime
 
 from ai_daily_digest.intelligence.loaders import FixtureLoader
-from ai_daily_digest.intelligence.resolve import load_alias_table, resolve_deterministic
+from ai_daily_digest.intelligence.resolve import (
+    SubjectAlias,
+    load_alias_table,
+    quoted_span_supports_subject,
+    resolve_deterministic,
+)
 from ai_daily_digest.shared.schemas import SourceItem, Subject
 
 # The fixture pack's known subjects (see tests/fixtures/contracts/README.md)
@@ -18,12 +23,12 @@ TR_ITEM_O100 = uuid.UUID("01a01e2f-2fa0-7290-a1ff-1f0214d73621")
 TR_ITEM_X = uuid.UUID("01a01e2f-3388-77b0-a5b7-cc071d465b25")
 
 
-def _item(item_id: uuid.UUID, title: str) -> SourceItem:
+def _item(item_id: uuid.UUID, title: str, publisher: str = "Test Publisher") -> SourceItem:
     return SourceItem(
         id=item_id,
         dedupe_key=f"sha256:{item_id}",
         source_id="test-source",
-        publisher="Test Publisher",
+        publisher=publisher,
         title=title,
         canonical_url="https://example.com/a",  # type: ignore[arg-type]
         first_fetched_at=datetime(2026, 8, 20, tzinfo=UTC),
@@ -81,16 +86,22 @@ def test_unrelated_item_does_not_match() -> None:
 def test_ambiguous_when_two_subjects_both_match() -> None:
     shared = Subject(company="Shared Co", product="Shared Product")
     other = Subject(company="Other Co", product="Shared Product")
+    # Reviewed aliases (not the bare product name) so this test exercises
+    # ambiguity detection alone, independent of the bare-product-name
+    # provenance gate (see test_medieval_codex... below for that).
+    alias_table = [
+        SubjectAlias(subject=shared, aliases=["shared product"]),
+        SubjectAlias(subject=other, aliases=["shared product"]),
+    ]
     item = _item(TR_ITEM_AMB, "Shared Product gets an update")
-    # Force both to be findable by giving them the same aliasable product name.
     result = resolve_deterministic(
         item,
         [shared, other],
-        alias_table=[],
+        alias_table=alias_table,
         item_text="Details about Shared Product follow.",
     )
     assert result.subject is None
-    assert result.method == "ambiguous"
+    assert result.method == "ambiguous_multi_subject"
     assert set(result.candidate_subjects) == {shared, other}
 
 
@@ -237,3 +248,369 @@ def test_unknown_source_item_fails_closed() -> None:
     assert result.subject is None
     assert result.method == "no_match"
     assert result.confidence == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Regression tests using the five real OpenAI RSS entries from the
+# rehearsal (titles/descriptions fetched verbatim from
+# https://openai.com/news/rss.xml during the follow-up review; see the
+# PR description for the exact fetch). Each SUBJECT_CHATGPT/CODEX/etc.
+# below is only registered by adding OpenAI/ChatGPT, OpenAI/Codex,
+# OpenAI/GPT-Live-1, and OpenAI/GPT-6 Astra to shared/aliases.yaml.
+# ---------------------------------------------------------------------------
+
+SUBJECT_CHATGPT = Subject(company="OpenAI", product="ChatGPT")
+SUBJECT_CODEX = Subject(company="OpenAI", product="Codex")
+SUBJECT_GPT_LIVE_1 = Subject(company="OpenAI", product="GPT-Live-1")
+SUBJECT_GPT_6_ASTRA = Subject(company="OpenAI", product="GPT-6 Astra")
+
+TR_ITEM_CODEX_CHATGPT = uuid.UUID("01a01e2f-5001-7000-8000-000000000001")
+TR_ITEM_DATA_AGENT = uuid.UUID("01a01e2f-5002-7000-8000-000000000002")
+TR_ITEM_FIN_SERVICES = uuid.UUID("01a01e2f-5003-7000-8000-000000000003")
+TR_ITEM_GOV_POLICY = uuid.UUID("01a01e2f-5004-7000-8000-000000000004")
+TR_ITEM_GPT_LIVE_1 = uuid.UUID("01a01e2f-5005-7000-8000-000000000005")
+
+
+def test_codex_and_chatgpt_item_is_ambiguous_multi_subject() -> None:
+    """Item 1: "How a researcher uses Codex and ChatGPT to search for new
+    antimicrobial molecules" explicitly names two tracked products in one
+    item. The schema allows only one Subject per item, so this must stay
+    unresolved with both candidates preserved -- never silently collapsed
+    onto either one by the LLM. publisher="OpenAI" reflects the real
+    item's actual source (openai_news) and is also load-bearing here:
+    neither "Codex" nor "ChatGPT" appears with the company name in a
+    single phrase or as a reviewed alias, so each is a bare-product-name
+    match that needs the publisher (or a company-name mention in the
+    text, absent here) to corroborate it -- see
+    resolve.py::_bare_match_corroborated()."""
+    item = _item(
+        TR_ITEM_CODEX_CHATGPT,
+        "How a researcher uses Codex and ChatGPT to search for new antimicrobial molecules",
+        publisher="OpenAI",
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text=(
+            "César de la Fuente's lab uses Codex and ChatGPT to search living and "
+            "extinct genomes for antimicrobial candidates to fight drug-resistant "
+            "infections."
+        ),
+    )
+    assert result.subject is None
+    assert result.method == "ambiguous_multi_subject"
+    assert set(result.candidate_subjects) == {SUBJECT_CHATGPT, SUBJECT_CODEX}
+
+
+def test_data_agent_item_resolves_to_chatgpt_product_family() -> None:
+    """Item 2: "Now everyone can put data to work" -- the RSS description
+    is "Meet the Data agent in ChatGPT Work. Connect company data,
+    uncover insights, and build interactive dashboards with AI using
+    natural language." "Data agent" and "ChatGPT Work" are a feature and
+    a tier, not tracked subjects (per this PR's scope), but the
+    description does contain the bare canonical phrase "ChatGPT" as a
+    whole word ("...in ChatGPT Work...") -- so this resolves to the
+    OpenAI/ChatGPT product family via ordinary deterministic phrase
+    matching, the same as any other item that happens to mention a tier
+    name alongside the bare product name. This is a documented outcome of
+    the "no feature/tier subjects yet" scope decision, not a special
+    case in the code. publisher="OpenAI" corroborates the bare "ChatGPT"
+    match (see resolve.py::_bare_match_corroborated()) -- the real item's
+    actual source (openai_news)."""
+    item = _item(TR_ITEM_DATA_AGENT, "Now everyone can put data to work", publisher="OpenAI")
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text=(
+            "Meet the Data agent in ChatGPT Work. Connect company data, uncover "
+            "insights, and build interactive dashboards with AI using natural "
+            "language."
+        ),
+    )
+    assert result.subject == SUBJECT_CHATGPT
+    assert result.method == "alias_match"
+
+
+def test_financial_services_item_is_ambiguous_multi_subject() -> None:
+    """Item 3: "Introducing ChatGPT for Financial Services" -- the RSS
+    description is "Introducing ChatGPT for Financial Services, combining
+    built-in financial data and GPT-6 Astra for research, modeling, and
+    client-ready materials." Both "ChatGPT" and "GPT-6 Astra" are
+    tracked, whole-phrase matches, so this must stay unresolved with both
+    candidates preserved -- "Financial Services" itself is an offering
+    name, not a subject (per this PR's scope), and is not what drives the
+    ambiguity here. publisher="OpenAI" corroborates both bare-name matches
+    (see resolve.py::_bare_match_corroborated()) -- the real item's actual
+    source (openai_news)."""
+    item = _item(
+        TR_ITEM_FIN_SERVICES, "Introducing ChatGPT for Financial Services", publisher="OpenAI"
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text=(
+            "Introducing ChatGPT for Financial Services, combining built-in "
+            "financial data and GPT-6 Astra for research, modeling, and "
+            "client-ready materials."
+        ),
+    )
+    assert result.subject is None
+    assert result.method == "ambiguous_multi_subject"
+    assert set(result.candidate_subjects) == {SUBJECT_CHATGPT, SUBJECT_GPT_6_ASTRA}
+
+
+def test_government_policy_item_has_no_deterministic_match() -> None:
+    """Item 4: the government/cyber-defense item names no tracked product
+    at all -- title "Expanding AI access and cyber defense for federal,
+    state, local, and tribal governments", description "OpenAI and GSA
+    will offer eligible federal, state, local, and tribal governments $0
+    license fees, 50% off usage, and expanded cyber defense support."
+    Deterministic matching correctly finds nothing (not even "OpenAI"
+    alone triggers a match -- see _candidate_strings(), which never
+    includes a bare company name). This is the item that previously
+    false-merged onto GPT-4o via the LLM fallback; the fallback's own
+    grounding guard is tested in test_resolve_llm.py."""
+    item = _item(
+        TR_ITEM_GOV_POLICY,
+        "Expanding AI access and cyber defense for federal, state, local, and tribal governments",
+        publisher="OpenAI",
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text=(
+            "OpenAI and GSA will offer eligible federal, state, local, and tribal "
+            "governments $0 license fees, 50% off usage, and expanded cyber "
+            "defense support."
+        ),
+    )
+    assert result.subject is None
+    assert result.method == "no_match"
+
+
+def test_gpt_live_1_item_resolves_deterministically() -> None:
+    """Item 5: "Build more natural voice experiences with GPT\u2011Live\u20111 in
+    the API" -- fetched verbatim, the real title/description use a
+    Unicode non-breaking hyphen (U+2011), not a plain ASCII "-". A single,
+    unambiguous exact match against the canonical OpenAI/GPT-Live-1 entry
+    added to aliases.yaml, no alias needed. publisher="OpenAI" corroborates
+    the bare-name match (see resolve.py::_bare_match_corroborated()) -- the
+    real item's actual source (openai_news)."""
+    item = _item(
+        TR_ITEM_GPT_LIVE_1,
+        "Build more natural voice experiences with GPT\u2011Live\u20111 in the API",
+        publisher="OpenAI",
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text=(
+            "GPT\u2011Live\u20111 brings natural, full-duplex voice conversations "
+            "to the API, with stronger instruction following, custom voices, and "
+            "telephony support."
+        ),
+    )
+    assert result.subject == SUBJECT_GPT_LIVE_1
+    assert result.method == "alias_match"
+
+
+def test_gpt_live_1_punctuation_variants_all_match() -> None:
+    """normalise_name() strips any non-word/non-space character, so the
+    canonical "GPT-Live-1" entry (plain ASCII hyphens) must match all
+    three real-world punctuation variants without needing a single added
+    alias: a non-breaking hyphen (the real RSS feed's own rendering), a
+    plain ASCII hyphen, and bare spaces."""
+    alias_table = load_alias_table()
+    variants = [
+        "GPT\u2011Live\u20111",  # non-breaking hyphens, as published
+        "GPT-Live-1",  # plain ASCII hyphens
+        "GPT Live 1",  # spaces only
+    ]
+    for index, variant in enumerate(variants):
+        item = _item(
+            uuid.UUID(f"01a01e2f-5006-7000-8000-00000000000{index}"),
+            f"Build more natural voice experiences with {variant} in the API",
+            publisher="OpenAI",
+        )
+        result = resolve_deterministic(
+            item,
+            [],
+            alias_table=alias_table,
+            item_text=f"{variant} brings natural, full-duplex voice conversations to the API.",
+        )
+        assert result.subject == SUBJECT_GPT_LIVE_1, f"variant {variant!r} failed to match"
+        assert result.method == "alias_match"
+
+
+# ---------------------------------------------------------------------------
+# Codex generic-word false-positive: "Codex" is also an ordinary English
+# noun (a bound manuscript), so the bare canonical name alone is not
+# enough to accept a match -- see resolve.py::_bare_match_corroborated().
+# ---------------------------------------------------------------------------
+
+TR_ITEM_MEDIEVAL_CODEX = uuid.UUID("01a01e2f-5009-7000-8000-000000000009")
+TR_ITEM_OPENAI_CODEX = uuid.UUID("01a01e2f-500a-7000-8000-00000000000a")
+TR_ITEM_OPENAI_NO_CODEX = uuid.UUID("01a01e2f-500b-7000-8000-00000000000b")
+
+
+def test_medieval_codex_article_does_not_resolve_to_openai_codex() -> None:
+    """An unrelated/editorial article using "codex" in its ordinary sense
+    (a bound manuscript), published by something with no connection to
+    OpenAI and never mentioning OpenAI anywhere in the text either, must
+    fail closed -- not resolve to the tracked OpenAI/Codex subject purely
+    because the bare word matches."""
+    item = _item(
+        TR_ITEM_MEDIEVAL_CODEX,
+        "A medieval codex was discovered",
+        publisher="City History Museum",
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="Researchers are preserving the ancient codex.",
+    )
+    assert result.subject is None
+    assert result.method == "no_match"
+
+
+def test_openai_published_codex_mention_resolves_to_openai_codex() -> None:
+    """The corroborating case: an explicit OpenAI product announcement
+    mentioning Codex resolves normally -- the item's own publisher (the
+    real item's actual source, openai_news) corroborates the bare-name
+    match."""
+    item = _item(TR_ITEM_OPENAI_CODEX, "Codex gets new capabilities", publisher="OpenAI")
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="OpenAI is rolling out new capabilities for Codex today.",
+    )
+    assert result.subject == SUBJECT_CODEX
+    assert result.method == "alias_match"
+
+
+def test_openai_article_without_codex_mention_is_not_forced_to_codex() -> None:
+    """A genuine OpenAI-published item that never mentions Codex at all
+    must not be forced onto it merely because the publisher matches --
+    provenance corroborates a textual match, it never substitutes for
+    one."""
+    item = _item(
+        TR_ITEM_OPENAI_NO_CODEX, "OpenAI announces a new safety initiative", publisher="OpenAI"
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="The company outlined new safety research commitments today.",
+    )
+    assert result.subject is None
+    assert result.method == "no_match"
+
+
+def test_third_party_report_naming_the_company_elsewhere_in_text_still_resolves() -> None:
+    """A third-party outlet's own coverage, mentioning the company
+    somewhere in the text even though it isn't adjacent to the product
+    name, still corroborates a bare-name match -- provenance isn't
+    limited to "the publisher equals the company" (see
+    resolve.py::_bare_match_corroborated()). This mirrors
+    tests/fixtures/contracts's own TechDesk/GPT-4o fixture item."""
+    item = _item(
+        TR_ITEM_OPENAI_CODEX,
+        "A researcher's toolkit",
+        publisher="TechDesk",
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="OpenAI's Codex is being used by researchers in a new toolkit.",
+    )
+    assert result.subject == SUBJECT_CODEX
+    assert result.method == "alias_match"
+
+
+# ---------------------------------------------------------------------------
+# quoted_span_supports_subject() -- the deterministic grounding check
+# resolve_llm.py relies on before accepting an existing-subject match.
+# ---------------------------------------------------------------------------
+
+
+def test_quoted_span_supports_subject_rejects_missing_quote() -> None:
+    assert not quoted_span_supports_subject(
+        Subject(company="OpenAI", product="GPT-4o"),
+        None,
+        item_text="Anything at all.",
+        alias_table=[],
+    )
+
+
+def test_quoted_span_supports_subject_rejects_fabricated_span() -> None:
+    """A quote that simply isn't present in the item text at all --
+    whether hallucinated outright or lightly paraphrased -- must be
+    rejected on the verbatim-substring check alone, before the phrase
+    check even runs."""
+    assert not quoted_span_supports_subject(
+        Subject(company="OpenAI", product="GPT-4o"),
+        "GPT-4o powers this new government partnership",
+        item_text="OpenAI announced a new partnership with a federal agency today.",
+        alias_table=[],
+    )
+
+
+def test_quoted_span_supports_subject_rejects_mid_word_embedded_quote() -> None:
+    """A quote that is technically a raw character substring of item_text
+    but only because it's embedded inside a different, longer word (e.g.
+    "GPT-4o" inside "GPT-4oXtra") must be rejected -- a bare `in` check
+    would wrongly accept this since it ignores word boundaries."""
+    assert not quoted_span_supports_subject(
+        Subject(company="OpenAI", product="GPT-4o"),
+        "GPT-4o",
+        item_text="This release note describes GPT-4oXtra's new features.",
+        alias_table=[],
+    )
+
+
+def test_quoted_span_supports_subject_rejects_company_only_evidence() -> None:
+    """A real, verbatim quote that names only the company -- exactly the
+    government/policy rehearsal case -- must be rejected. This is the
+    general grounding rule doing its job, not a keyword denylist for
+    "government"/"policy"/"partnership"."""
+    item_text = "OpenAI announced a new partnership with a federal agency today."
+    assert not quoted_span_supports_subject(
+        Subject(company="OpenAI", product="GPT-4o"),
+        "OpenAI announced a new partnership with a federal agency today.",
+        item_text=item_text,
+        alias_table=[],
+    )
+
+
+def test_quoted_span_supports_subject_accepts_valid_grounded_quote() -> None:
+    """The positive case: a verbatim quote that both appears in the item
+    text and names the specific proposed product."""
+    item_text = "OpenAI's GPT-4o now supports a 256,000 token context window."
+    assert quoted_span_supports_subject(
+        Subject(company="OpenAI", product="GPT-4o"),
+        "GPT-4o now supports a 256,000 token context window",
+        item_text=item_text,
+        alias_table=[],
+    )
+
+
+def test_quoted_span_supports_subject_accepts_reviewed_alias() -> None:
+    """The phrase check must accept a reviewed alias, not only the bare
+    canonical product name."""
+    subject = Subject(company="OpenAI", product="GPT-4o")
+    alias_table = load_alias_table()
+    item_text = "The gpt4o rollout is now complete for all API customers."
+    assert quoted_span_supports_subject(
+        subject,
+        "The gpt4o rollout is now complete",
+        item_text=item_text,
+        alias_table=alias_table,
+    )

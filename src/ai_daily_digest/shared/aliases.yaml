@@ -26,3 +26,22 @@ subjects:
     aliases:
       - "langgraph"
       - "langgraph-core"
+
+  # Reviewed top-level OpenAI products/models (rehearsal follow-up).
+  # Deliberately no aliases yet: normalise_name() already collapses
+  # hyphen/space/non-breaking-hyphen variants of these canonical names to
+  # the same string (verified in tests/unit/test_resolve.py), so an
+  # alias here would be redundant. Offerings/tiers/features layered on
+  # top of a product (e.g. "ChatGPT Work", "ChatGPT Enterprise", "ChatGPT
+  # Team") are deliberately NOT separate subjects or aliases here -- that
+  # is a taxonomy decision for later, not something to resolve by adding
+  # broad keywords now. Add an alias only when a test demonstrates the
+  # canonical name itself fails to normalise against a real variant.
+  - company: "OpenAI"
+    product: "ChatGPT"
+  - company: "OpenAI"
+    product: "Codex"
+  - company: "OpenAI"
+    product: "GPT-Live-1"
+  - company: "OpenAI"
+    product: "GPT-6 Astra"
