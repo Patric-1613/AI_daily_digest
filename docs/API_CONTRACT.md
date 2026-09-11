@@ -462,6 +462,14 @@ Subscription endpoints implement accepted ADRs 0012 and 0013. RFC 8058 one-click
 disabled and absent from OpenAPI until issue #53 proves token-bearing request targets are retained
 by no platform or application logging layer.
 
+The application-side routes are also disabled in the production factory until issue #53 supplies
+a provider-neutral confirmation-delivery adapter and configures the deployed server with an
+explicit trusted-proxy allowlist. Token security settings alone do not activate the routes. Before
+activation, `request.client` must represent an address accepted through that deployment-controlled
+proxy boundary; a wildcard proxy trust setting is forbidden. This prevents the API from claiming
+that an unsent confirmation will be delivered and prevents all Render users from sharing one
+connection-peer rate-limit identity.
+
 `POST /v1/subscriptions` starts double opt-in and returns HTTP 202:
 
 ```json

@@ -404,3 +404,11 @@ service, Person A then **immediately sets `ANTHROPIC_API_KEY`** in that service'
 environment, and only after the key is configured is the first execution **manually triggered**.
 `DATABASE_URL` needs no manual step — Render injects it automatically from the database. The first
 run's result is recorded on issue #53.
+
+Subscription activation has two additional fail-closed gates under ADRs 0012 and 0013. Person A
+must wire a provider-neutral confirmation-delivery adapter so the raw confirmation capability is
+passed directly to the provider after the database transaction and is never returned, persisted,
+or logged. Person A must also configure Uvicorn/Render with an explicit trusted-proxy allowlist and
+verify that `request.client` contains the validated public client address; wildcard proxy trust is
+not allowed. Until both conditions are reviewed and tested under issue #53, the production factory
+keeps all subscription routes unmounted even when subscription security keys are present.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from ai_daily_digest.delivery.api.app import create_app
 from ai_daily_digest.delivery.subscriptions.repository import (
     SubscriptionRepository,
+    SubscriptionRequestResult,
     network_identity,
     normalize_email,
 )
@@ -15,7 +17,23 @@ from ai_daily_digest.delivery.subscriptions.service import (
     SubscriptionRateLimitError,
     SubscriptionService,
 )
-from ai_daily_digest.delivery.subscriptions.tokens import InvalidSubscriptionTokenError
+from ai_daily_digest.delivery.subscriptions.tokens import (
+    InvalidSubscriptionTokenError,
+    IssuedSubscriptionToken,
+    SubscriptionTokenPurpose,
+)
+
+
+class _AssertingConfirmationDelivery:
+    def __init__(self, *, expected_address: str, expected_token: str) -> None:
+        self.expected_address = expected_address
+        self.expected_token_digest = hashlib.sha256(expected_token.encode("ascii")).hexdigest()
+        self.calls = 0
+
+    async def send_confirmation(self, *, address: str, token: str) -> None:
+        assert address == self.expected_address
+        assert hashlib.sha256(token.encode("ascii")).hexdigest() == self.expected_token_digest
+        self.calls += 1
 
 
 def test_email_normalization_preserves_local_part_and_normalizes_domain() -> None:
@@ -39,7 +57,24 @@ def test_network_identity_masks_addresses_before_hashing() -> None:
 async def test_service_enforces_address_and_network_limits_without_plaintext_keys() -> None:
     repository = AsyncMock(spec=SubscriptionRepository)
     repository.consume_rate_limit.return_value = True
-    service = SubscriptionService(repository, rate_limit_key=b"r" * 32)
+    raw_token = "raw-confirmation-capability"
+    repository.request_subscription.return_value = SubscriptionRequestResult(
+        confirmation_token=IssuedSubscriptionToken(
+            token=raw_token,
+            token_digest="d" * 64,
+            key_id="test-confirm-1",
+            purpose=SubscriptionTokenPurpose.CONFIRM,
+        )
+    )
+    delivery = _AssertingConfirmationDelivery(
+        expected_address="Reader@example.com",
+        expected_token=raw_token,
+    )
+    service = SubscriptionService(
+        repository,
+        rate_limit_key=b"r" * 32,
+        confirmation_delivery=delivery,
+    )
 
     await service.request_subscription("Reader@example.com", "192.0.2.8")
 
@@ -48,6 +83,29 @@ async def test_service_enforces_address_and_network_limits_without_plaintext_key
     assert "Reader@example.com" not in serialized_calls
     assert "192.0.2.0/24" not in serialized_calls
     repository.request_subscription.assert_awaited_once_with("Reader@example.com")
+    assert delivery.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_service_does_not_call_delivery_when_no_confirmation_was_issued() -> None:
+    repository = AsyncMock(spec=SubscriptionRepository)
+    repository.consume_rate_limit.return_value = True
+    repository.request_subscription.return_value = SubscriptionRequestResult(
+        confirmation_token=None
+    )
+    delivery = _AssertingConfirmationDelivery(
+        expected_address="unused@example.com",
+        expected_token="unused",
+    )
+    service = SubscriptionService(
+        repository,
+        rate_limit_key=b"r" * 32,
+        confirmation_delivery=delivery,
+    )
+
+    await service.request_subscription("Reader@example.com", "192.0.2.8")
+
+    assert delivery.calls == 0
 
 
 def _client(service: SubscriptionService | AsyncMock) -> TestClient:
