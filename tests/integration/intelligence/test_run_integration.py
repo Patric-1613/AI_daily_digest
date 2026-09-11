@@ -1095,11 +1095,11 @@ async def test_anthropic_rehearsal_two_snapshot_progression_postgresql_integrati
     """
     t1 = datetime(2023, 5, 11, 9, 0, 0, tzinfo=UTC)
     t2 = datetime(2023, 11, 21, 9, 0, 0, tzinfo=UTC)
-    target_date = date(2026, 9, 11)
+    target_date = date(2023, 11, 21)
 
     async with open_database_session() as session:
         # Item 1 (100K)
-        await _create_item_and_snapshot(
+        _, snap1_id = await _create_item_and_snapshot(
             session,
             publisher="Anthropic",
             title="Introducing 100K Context Windows",
@@ -1107,7 +1107,7 @@ async def test_anthropic_rehearsal_two_snapshot_progression_postgresql_integrati
             fetched_at=t1,
         )
         # Item 2 (200K)
-        await _create_item_and_snapshot(
+        _, snap2_id = await _create_item_and_snapshot(
             session,
             publisher="Anthropic",
             title="Claude 2.1",
@@ -1165,7 +1165,9 @@ async def test_anthropic_rehearsal_two_snapshot_progression_postgresql_integrati
         assert digest_row.status == "published"
 
         # Check persisted change in PostgreSQL
-        changes_stmt = select(ChangeModel)
+        changes_stmt = select(ChangeModel).where(
+            ChangeModel.current_snapshot_id.in_([snap1_id, snap2_id])
+        )
         changes = (await session.execute(changes_stmt)).scalars().all()
         assert len(changes) == 1
         assert changes[0].field == "context_window_tokens"
