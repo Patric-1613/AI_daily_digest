@@ -458,7 +458,19 @@ through `intelligence/validate.py::publish_digest()`.
 
 ## Subscription request contracts
 
-Start double opt-in:
+Subscription endpoints implement accepted ADRs 0012 and 0013. RFC 8058 one-click unsubscribe is
+disabled and absent from OpenAPI until issue #53 proves token-bearing request targets are retained
+by no platform or application logging layer.
+
+The application-side routes are also disabled in the production factory until issue #53 supplies
+a provider-neutral confirmation-delivery adapter and configures the deployed server with an
+explicit trusted-proxy allowlist. Token security settings alone do not activate the routes. Before
+activation, `request.client` must represent an address accepted through that deployment-controlled
+proxy boundary; a wildcard proxy trust setting is forbidden. This prevents the API from claiming
+that an unsent confirmation will be delivered and prevents all Render users from sharing one
+connection-peer rate-limit identity.
+
+`POST /v1/subscriptions` starts double opt-in and returns HTTP 202:
 
 ```json
 {
@@ -485,6 +497,37 @@ Confirm and unsubscribe each accept a signed, single-purpose token:
 ```
 
 Raw tokens are never stored. Their hashes, purpose, expiry, and use/revocation time are stored.
+
+`POST /v1/subscriptions/confirm` and `POST /v1/subscriptions/unsubscribe` accept the token JSON
+above and return HTTP 200 with, respectively:
+
+```json
+{"message": "Your subscription has been confirmed."}
+```
+
+```json
+{"message": "You have been unsubscribed."}
+```
+
+Both browser token endpoints require an `Origin` header exactly equal to the configured HTTPS
+frontend origin, use credentialless CORS, and never use the inbound host to build links. Human
+links use `/subscriptions/confirm#token=<token>` and
+`/subscriptions/unsubscribe#token=<token>`; the SPA removes the fragment from browser history
+before an explicit user action sends the token in a JSON POST. GET requests never mutate state.
+
+Every malformed, expired, revoked, consumed confirmation, wrong-purpose, wrong-generation, or
+otherwise unusable token returns HTTP 400 with code `invalid_subscription_token`, the message
+`"The subscription token is invalid or no longer usable."`, and empty details. Validation errors
+remain HTTP 422. An absent or incorrect browser origin returns HTTP 403
+`invalid_request_origin`. Rate-limit exhaustion returns HTTP 429 `subscription_rate_limited`.
+None of these responses contains an address, token, subscription ID, generation, or precise token
+failure reason.
+
+Rate limits use atomic PostgreSQL fixed-window counters keyed by purpose-separated HMAC digests:
+three subscription requests per normalized address per hour, twenty per masked network per hour,
+and thirty confirm/unsubscribe attempts per masked network per ten minutes. Network identity is
+the validated ASGI peer (IPv4 `/24`, IPv6 `/56`); application code does not parse client-supplied
+forwarding headers. Counter rows expire 24 hours after their window closes.
 
 ## Chat request contract
 
