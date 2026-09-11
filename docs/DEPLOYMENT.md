@@ -292,6 +292,40 @@ the command must not be wrapped in or exposed through an unauthenticated public 
 page — still requires a separate security decision covering authentication, authorisation, replay
 protection, rate limits, audit logging, and secret access.
 
+#### Controlled historical-article rehearsal
+
+After the official-article backfill change is merged and the existing
+`ai-daily-digest-intelligence` cron service shows that exact `main` commit as
+its latest successful build, an authorised operator may create a **one-off
+job on that existing service** with this command:
+
+```bash
+.venv/bin/collect-official-article --source-id anthropic_news --url https://www.anthropic.com/news/100k-context-windows --url https://www.anthropic.com/news/claude-2-1
+```
+
+This does not change the cron's configured start command or schedule and must
+not create another Render service. The pages are intentionally supplied oldest
+first: Anthropic's 11 May 2023 100K context-window announcement establishes the
+baseline, followed by its 21 November 2023 Claude 2.1 200K announcement. The
+data remains real first-party evidence; no facts are pasted or synthesised.
+
+Record only the command's final secret-safe JSON line and exit status. A clean
+first run should report `status: ok`, `requested_count: 2`,
+`processed_count: 2`, and two created snapshots; an idempotent rerun may instead
+report them unchanged. If collection succeeds, copy the report's `started_at`
+value and create a second one-off job on the same service:
+
+```bash
+.venv/bin/generate-digest --since <article-report-started_at> --limit 5 --digest-date <current-UTC-date>
+```
+
+Success for the full rehearsal means the intelligence report contains a
+grounded change and claim, the publication gates allow a published digest, and
+the stored result appears through `/v1/changes`, `/v1/digests`, and the UI. A
+draft or review-required outcome is still a valid fail-closed result and must
+be investigated from its safe reason codes; never weaken the gates merely to
+force a demonstration.
+
 ## Resend free-tier constraints
 
 Resend's current [pricing](https://resend.com/pricing) and

@@ -45,10 +45,9 @@ LOGGER = logging.getLogger(__name__)
 # "slow down". Every other non-2xx is permanent for this run.
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
-# The Content-Type media types an RSS/Atom feed may legitimately carry.
-# Anything else (notably `text/html`, a login wall or an error page) is a
-# permanent failure -- the response is not a feed.
-_APPROVED_MEDIA_TYPES = frozenset(
+# The default Content-Type media types an RSS/Atom fetch may legitimately
+# carry. Other guarded ingestion adapters can provide their own reviewed set.
+RSS_MEDIA_TYPES = frozenset(
     {
         "application/rss+xml",
         "application/atom+xml",
@@ -127,14 +126,22 @@ class HttpFetcher(Protocol):
 
 
 class HttpxFetcher:
-    """`HttpFetcher` backed by `httpx.AsyncClient`. Streams the response
-    and aborts once `max_response_bytes` is exceeded, so a runaway body
-    is never fully buffered. A caller may inject a custom
-    `httpx.AsyncBaseTransport` (e.g. `httpx.MockTransport`) to exercise
-    this class with no network."""
+    """`HttpFetcher` backed by `httpx.AsyncClient`.
 
-    def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    Responses are streamed and bounded. RSS/XML media types are accepted by
+    default; another guarded adapter must explicitly provide its reviewed
+    media-type set. A custom `httpx.AsyncBaseTransport` can be injected for
+    offline tests.
+    """
+
+    def __init__(
+        self,
+        transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        approved_media_types: frozenset[str] = RSS_MEDIA_TYPES,
+    ) -> None:
         self._transport = transport
+        self._approved_media_types = approved_media_types
 
     async def fetch(
         self,
@@ -196,7 +203,7 @@ class HttpxFetcher:
                     raise PermanentTransportError(
                         f"HTTP {response.status_code} from {sanitize_url(current)}"
                     )
-                _require_approved_media_type(response, current)
+                _require_approved_media_type(response, current, self._approved_media_types)
                 body = await _read_capped(response, max_response_bytes)
                 return HttpResponse(
                     status_code=response.status_code,
@@ -223,10 +230,12 @@ class HttpxFetcher:
             raise PermanentTransportError(str(exc)) from exc
 
 
-def _require_approved_media_type(response: httpx.Response, url: str) -> None:
+def _require_approved_media_type(
+    response: httpx.Response, url: str, approved_media_types: frozenset[str]
+) -> None:
     raw = response.headers.get("content-type", "")
     media_type = raw.split(";", 1)[0].strip().lower()
-    if media_type not in _APPROVED_MEDIA_TYPES:
+    if media_type not in approved_media_types:
         raise PermanentTransportError(
             f"unapproved Content-Type {media_type or '(none)'!r} from {sanitize_url(url)}"
         )
@@ -260,6 +269,7 @@ async def fetch_with_retry(  # pylint: disable=too-many-arguments
     policy: CollectionPolicy,
     allowed_hosts: frozenset[str],
     extra_headers: Mapping[str, str] | None = None,
+    accept: str = "application/rss+xml, application/xml",
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     outcome: RetryOutcome | None = None,
 ) -> HttpResponse:
@@ -270,7 +280,7 @@ async def fetch_with_retry(  # pylint: disable=too-many-arguments
     disallowed host/redirect) is re-raised immediately -- never retried.
     `sleep` is injectable so tests assert the retry schedule without real
     delay."""
-    headers = {"User-Agent": policy.user_agent, "Accept": "application/rss+xml, application/xml"}
+    headers = {"User-Agent": policy.user_agent, "Accept": accept}
     if extra_headers:
         headers.update(extra_headers)
     record = outcome if outcome is not None else RetryOutcome()
