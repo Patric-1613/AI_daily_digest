@@ -49,22 +49,62 @@ worked example with fakes standing in for all three.
 ## resolve_llm — Classify
 
 - **File**: `intelligence/resolve_llm.py`, prompt `intelligence/prompts/resolve.txt`
-- **Runs**: only on items deterministic alias matching (`intelligence/resolve.py`)
-  left unmatched or ambiguous.
+- **Runs**: only on true residue from deterministic alias matching
+  (`intelligence/resolve.py`, `method="no_match"`). An item that
+  deterministically phrase-matched two or more already-tracked subjects
+  (`method="ambiguous_multi_subject"`, e.g. an item naming both Codex and
+  ChatGPT) is never sent here — see resolve.py's module docstring.
 - **Input**: item title + snapshot text excerpt, list of candidate
-  `Subject`s (company, product).
-- **Output**: `{company: str|null, product: str|null, new_subject_proposal: str|null, confidence: float}`
+  `Subject`s (company, product), the same checked-in alias table
+  deterministic matching used (for the grounding check below).
+- **Output**: `{company: str|null, product: str|null, new_subject_proposal: str|null, supporting_quote: str|null, confidence: float}`
 - **Model**: Haiku 4.5. No `temperature` control — removed on current-gen
   models (400 if sent); see `intelligence/llm.py::call_structured`'s
   docstring.
-- **Guardrail**: constrained JSON only, no free text. `confidence < 0.6` →
-  logged for manual review, never auto-merged. A high-confidence proposal
-  naming a company/product that isn't actually one of the candidates it
-  was given is also never auto-merged (`method="llm_subject_not_in_candidates"`)
-  — treated the same as a new-subject proposal.
+- **Guardrail**: constrained JSON only, no free text. Three independent
+  checks, all required to accept an existing-subject match:
+  1. `confidence < 0.6` → `method="llm_low_confidence"`, never auto-merged.
+  2. A proposed company/product that isn't actually one of the candidates
+     it was given → `method="llm_subject_not_in_candidates"`, treated the
+     same as a new-subject proposal, never auto-merged.
+  3. A candidate-list member whose `supporting_quote` is missing, not a
+     verbatim substring of the item text, or doesn't name that specific
+     product (company-only evidence included) →
+     `method="llm_unsupported_subject_evidence"`, never auto-merged. This
+     is what stops a government/policy item from resolving to an existing
+     product merely because it's the only same-company candidate on
+     offer — candidate-list membership and self-reported confidence are
+     never sufficient on their own
+     (`intelligence/resolve.py::quoted_span_supports_subject`).
 - **Failure mode**: on parse/validation failure, `intelligence/llm.py`
   retries once with the error appended; on a second failure the item stays
   unresolved (never force-matched) and is logged.
+- **Known limitation / follow-up**: guardrail 3 makes `method="llm_resolved"`
+  (the LLM confirming an *existing* catalogued subject) effectively
+  unreachable in practice. Deterministic matching (`resolve_deterministic`)
+  already scans the same title+body text with the same phrase rule before
+  this call site ever runs, so any text that could ground an
+  existing-subject confirmation here would already have matched
+  deterministically — the residue this call site actually sees is text
+  where no tracked subject's name appears at all. In practice this call
+  site's only reachable outcomes today are: propose a genuinely new
+  subject, get flagged low-confidence, get flagged as
+  not-in-candidates, or get flagged as unsupported-evidence. This is a
+  deliberate, accepted consequence of closing the false-merge risk
+  structurally rather than relying on the model's discipline — not a bug
+  to fix reactively. Not addressed in this PR (no LLM-fallback
+  rearchitecture). Two directions for a future PR, requiring a product
+  decision first:
+  1. Turn `llm_new_subject_proposal` (and the flagged-but-rejected
+     methods) into a **persisted proposal/review row** instead of a log
+     line only, so a human can approve a genuinely new subject into
+     `aliases.yaml` without re-deriving it from logs.
+  2. Since this call site can no longer confirm a known subject, consider
+     **skipping the paid call entirely** on `no_match` once no alias-table
+     or known-subject candidates remain plausible for the item's
+     publisher, to avoid paying for a call whose only realistic outcomes
+     are "new subject" or "flagged" — trading a small chance of missing a
+     genuinely new same-company product name against per-item LLM cost.
 
 ## extract_facts — Extract
 

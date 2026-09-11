@@ -367,11 +367,18 @@ async def _resolve_and_extract_item(  # pylint: disable=too-many-arguments,too-m
         item_text=snapshot.content_text or "",
     )
     subject = resolution.subject
-    if subject is None:
+    if subject is None and resolution.method != "ambiguous_multi_subject":
+        # "ambiguous_multi_subject" (two or more tracked subjects both
+        # phrase-matched, e.g. Codex and ChatGPT) is never sent to the LLM
+        # fallback -- the schema allows only one Subject per item, so an
+        # LLM pick between two real matches would be a silent false merge,
+        # not a resolution. It stays unresolved; see resolve.py's module
+        # docstring and graph.py's route_after_classify.
         resolution_llm = resolve_via_llm(
             item,
             resolution.candidate_subjects,
             item_text=snapshot.content_text or "",
+            alias_table=alias_table,
             call_fn=resolve_llm_call_fn,
         )
         subject = resolution_llm.subject
