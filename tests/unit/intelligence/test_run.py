@@ -15,6 +15,7 @@ import pytest
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
 from ai_daily_digest.intelligence.db.repository import PostgresFactStore
+from ai_daily_digest.intelligence.extract_facts import FactExtractionResponse
 from ai_daily_digest.intelligence.run import (
     DigestRunEvaluation,
     DigestRunReport,
@@ -1446,3 +1447,112 @@ async def test_evaluate_digest_run_detects_unsupported_claims_and_duplicates(
     assert eval_result.citation_validity == 0.5
     assert eval_result.unsupported_claim_count == 1
     assert eval_result.duplicate_rate == 0.5
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_processes_langchain_and_langgraph_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that snapshots from langchain_pypi and langgraph_pypi resolve deterministically
+    and proceed through fact extraction, change detection, and claim assembly."""
+    target_date = date(2026, 9, 10)
+    now = datetime(2026, 9, 10, 12, 0, 0, tzinfo=UTC)
+
+    item_lc = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k_lc",
+        source_id="langchain_pypi",
+        publisher="Python Package Index",
+        title="9.9.0",
+        canonical_url="https://pypi.org/project/langchain/9.9.0/",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap_lc = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item_lc.id,
+        content_hash="h_lc",
+        fetched_at=now,
+        content_text="Release 9.9.0 of LangChain with updated context.",
+    )
+
+    item_lg = SourceItemRow(
+        id=new_id(),
+        dedupe_key="k_lg",
+        source_id="langgraph_pypi",
+        publisher="Python Package Index",
+        title="0.2.1",
+        canonical_url="https://pypi.org/project/langgraph/0.2.1/",
+        first_fetched_at=now,
+        language="en",
+    )
+    snap_lg = DocumentSnapshotRow(
+        id=new_id(),
+        source_item_id=item_lg.id,
+        content_hash="h_lg",
+        fetched_at=now,
+        content_text="Release notes for 0.2.1 with workflow graph features.",
+    )
+
+    async def _mock_select(*_args: Any, **_kwargs: Any) -> list[Any]:
+        return [(item_lc, snap_lc), (item_lg, snap_lg)]
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.select_snapshots_in_window", _mock_select)
+
+    class MockLangChainStore:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        async def detect_and_persist_changes(self, **kwargs: Any) -> list[Any]:
+            del kwargs
+            return []
+
+        async def get_changes_for_snapshot(self, _snap_id: Any) -> list[Any]:
+            return []
+
+        async def get_published_digest_by_date(self, *args: Any, **kwargs: Any) -> Digest | None:
+            del args, kwargs
+            return None
+
+        async def persist_digest(self, digest: Digest) -> Digest:
+            return digest
+
+        async def publish_digest(self, digest_id: uuid.UUID, **kwargs: Any) -> Digest:
+            del kwargs
+            return Digest(
+                id=digest_id,
+                digest_date=target_date,
+                status=DigestStatus.PUBLISHED,
+                title="Published Digest",
+                claims=[],
+            )
+
+    monkeypatch.setattr("ai_daily_digest.intelligence.run.PostgresFactStore", MockLangChainStore)
+
+    class MockResult:
+        def all(self) -> list[Any]:
+            return []
+
+    class MockSession:
+        async def execute(self, _stmt: Any) -> Any:
+            return MockResult()
+
+        async def commit(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def mock_session_factory() -> AsyncIterator[MockSession]:
+        yield MockSession()
+
+    report = await run_pipeline(
+        session_factory=cast(Any, mock_session_factory),
+        digest_date=target_date,
+        window_start=now - timedelta(hours=24),
+        window_end=now,
+        extract_call_fn=lambda _sys, _pr: FactExtractionResponse(facts=[]),
+    )
+
+    assert report.selected_snapshot_count == 2
+    assert report.unresolved_snapshot_count == 0
+    assert report.processed_snapshot_count == 2
+    assert report.failed_snapshot_count == 0

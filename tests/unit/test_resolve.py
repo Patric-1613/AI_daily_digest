@@ -126,3 +126,114 @@ def test_no_match_returns_all_known_subjects_as_candidates_for_llm_fallback() ->
     )
     assert result.method == "no_match"
     assert set(result.candidate_subjects) == set(KNOWN_SUBJECTS)
+
+
+def test_langchain_pypi_resolves_to_canonical_subject() -> None:
+    item = SourceItem(
+        id=uuid.UUID("01a01e2f-4110-7aa0-8b10-123456789abc"),
+        dedupe_key="sha256:langchain-9.9.0",
+        source_id="langchain_pypi",
+        publisher="Python Package Index",
+        title="9.9.0",
+        canonical_url="https://pypi.org/project/langchain/9.9.0/",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="Release notes for 9.9.0 with performance improvements and bug fixes.",
+    )
+    assert result.subject == Subject(company="LangChain", product="LangChain")
+    assert result.method == "alias_match"
+    assert result.confidence == 0.95
+    assert result.matched_text == "langchain_pypi"
+
+
+def test_langgraph_pypi_resolves_to_canonical_subject() -> None:
+    item = SourceItem(
+        id=uuid.UUID("01a01e2f-4220-7bb0-8c20-abcdef123456"),
+        dedupe_key="sha256:langgraph-0.2.1",
+        source_id="langgraph_pypi",
+        publisher="Python Package Index",
+        title="0.2.1",
+        canonical_url="https://pypi.org/project/langgraph/0.2.1/",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="Release notes for 0.2.1 with bug fixes and improvements.",
+    )
+    assert result.subject == Subject(company="LangChain", product="LangGraph")
+    assert result.method == "alias_match"
+    assert result.confidence == 0.95
+    assert result.matched_text == "langgraph_pypi"
+
+
+def test_generic_publisher_does_not_force_product_match() -> None:
+    """A generic company-level publisher must not create a product classification
+    when neither the title nor the body contains product-identifying evidence."""
+    item = SourceItem(
+        id=uuid.UUID("01a01e2f-4440-7dd0-8e40-112233445566"),
+        dedupe_key="sha256:generic-post-1",
+        source_id="generic_company_blog",
+        publisher="LangChain",
+        title="Observability platform update",
+        canonical_url="https://blog.example.com/observability",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="General infrastructure changes and monitoring dashboard updates.",
+    )
+    assert result.subject is None
+    assert result.method == "no_match"
+    assert result.confidence == 0.0
+
+
+def test_generic_source_id_does_not_force_product_match() -> None:
+    """A generic company source ID (e.g. langchain_changelog) must not force a product
+    match without explicit product evidence in the text."""
+    item = SourceItem(
+        id=uuid.UUID("01a01e2f-4550-7ee0-8f50-667788990011"),
+        dedupe_key="sha256:generic-changelog-1",
+        source_id="langchain_changelog",
+        publisher="Python Package Index",
+        title="Quarterly ecosystem recap",
+        canonical_url="https://example.com/changelog/recap",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="Overview of ecosystem events, contributor highlights, and community calls.",
+    )
+    assert result.subject is None
+    assert result.method == "no_match"
+    assert result.confidence == 0.0
+
+
+def test_unknown_source_item_fails_closed() -> None:
+    item = SourceItem(
+        id=uuid.UUID("01a01e2f-4330-7cc0-8d30-fedcba654321"),
+        dedupe_key="sha256:unknown-tool-1.0.0",
+        source_id="unknown_tool_pypi",
+        publisher="Python Package Index",
+        title="1.0.0",
+        canonical_url="https://pypi.org/project/unknown-tool/1.0.0/",  # type: ignore[arg-type]
+        first_fetched_at=datetime(2026, 9, 10, tzinfo=UTC),
+    )
+    result = resolve_deterministic(
+        item,
+        [],
+        alias_table=load_alias_table(),
+        item_text="Release 1.0.0 of an uncatalogued third-party library.",
+    )
+    assert result.subject is None
+    assert result.method == "no_match"
+    assert result.confidence == 0.0

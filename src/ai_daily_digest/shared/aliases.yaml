@@ -15,3 +15,15 @@ subjects:
     product: "Claude"
     aliases:
       - "claude model"
+  - company: "LangChain"
+    product: "LangChain"
+    aliases:
+      - "langchain"
+      - "langchain-core"
+      - "langchain-community"
+  - company: "LangChain"
+    product: "LangGraph"
+    aliases:
+      - "langgraph"
+      - "langgraph-core"
+
