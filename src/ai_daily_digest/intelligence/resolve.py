@@ -26,6 +26,14 @@ logger = logging.getLogger("intelligence.resolve")
 
 ALIASES_PATH = Path(__file__).resolve().parents[1] / "shared" / "aliases.yaml"
 
+# Trusted product-specific feeds that uniquely identify a single product by definition.
+# Checked before text matching to resolve version-only releases without mixing generic
+# source/publisher metadata into the alias text haystack.
+TRUSTED_SOURCE_SUBJECTS: dict[str, Subject] = {
+    "langchain_pypi": Subject(company="LangChain", product="LangChain"),
+    "langgraph_pypi": Subject(company="LangChain", product="LangGraph"),
+}
+
 
 @dataclass
 class SubjectAlias:
@@ -102,6 +110,27 @@ def resolve_deterministic(
     """item_text is the item's title plus its snapshot's content_text —
     SourceItem itself carries no body (see shared/schemas.py), so callers
     must pass the relevant DocumentSnapshot's text explicitly."""
+    # Product-specific trusted sources resolve directly by source_id to prevent
+    # missing version-only releases while keeping publisher/source metadata out
+    # of general alias text matching (preventing false merges).
+    if item.source_id in TRUSTED_SOURCE_SUBJECTS:
+        subject = TRUSTED_SOURCE_SUBJECTS[item.source_id]
+        result = ResolutionResult(
+            item_id=item.id,
+            subject=subject,
+            method="alias_match",
+            confidence=0.95,
+            matched_text=item.source_id,
+        )
+        logger.info(
+            "resolution item_id=%s subject=%s method=%s confidence=%s",
+            result.item_id,
+            result.subject,
+            result.method,
+            result.confidence,
+        )
+        return result
+
     alias_table = alias_table if alias_table is not None else load_alias_table()
     alias_index = _index_alias_table(alias_table)
     # dict.fromkeys dedupes while preserving order (known subjects first,
