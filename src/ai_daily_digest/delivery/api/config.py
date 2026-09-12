@@ -2,17 +2,34 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from ai_daily_digest.delivery.api.pagination import MIN_SIGNING_KEY_BYTES
+from ai_daily_digest.delivery.subscriptions.resend import (
+    ConfirmationDeliveryConfigurationError,
+    ResendConfirmationSettings,
+)
 from ai_daily_digest.delivery.subscriptions.tokens import SubscriptionTokenEnvironment
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_MAX_TRUSTED_PROXY_ENTRIES = 16
+_SUBSCRIPTION_SETTING_NAMES = (
+    "SUBSCRIPTION_TOKEN_ENVIRONMENT",
+    "SUBSCRIPTION_CONFIRM_KEY_ID",
+    "SUBSCRIPTION_CONFIRM_KEY",
+    "SUBSCRIPTION_UNSUBSCRIBE_KEY_ID",
+    "SUBSCRIPTION_UNSUBSCRIBE_KEY",
+    "SUBSCRIPTION_RATE_LIMIT_KEY",
+    "EMAIL_PROVIDER_API_KEY",
+    "EMAIL_FROM_ADDRESS",
+    "FORWARDED_ALLOW_IPS",
+)
 
 
 def _parse_boolean(*, name: str, value: str) -> bool:
@@ -54,6 +71,15 @@ class SubscriptionSecuritySettings:
     rate_limit_key: bytes = field(repr=False)
 
 
+@dataclass(frozen=True)
+class SubscriptionProductionSettings:
+    """Complete, fail-closed subscription composition settings."""
+
+    security: SubscriptionSecuritySettings = field(repr=False)
+    confirmation_delivery: ResendConfirmationSettings = field(repr=False)
+    forwarded_allow_ips: str = field(repr=False)
+
+
 def _subscription_security(values: Mapping[str, str]) -> SubscriptionSecuritySettings | None:
     names = (
         "SUBSCRIPTION_TOKEN_ENVIRONMENT",
@@ -89,6 +115,65 @@ def _subscription_security(values: Mapping[str, str]) -> SubscriptionSecuritySet
     )
 
 
+def _trusted_proxy_allowlist(value: str) -> str:
+    raw_entries = value.strip().split(",")
+    if (
+        not value.strip()
+        or len(raw_entries) > _MAX_TRUSTED_PROXY_ENTRIES
+        or any(not entry.strip() for entry in raw_entries)
+    ):
+        raise ValueError("FORWARDED_ALLOW_IPS must be a bounded IP/CIDR allowlist")
+
+    canonical_entries: list[str] = []
+    for raw_entry in raw_entries:
+        entry = raw_entry.strip()
+        if entry == "*":
+            raise ValueError("FORWARDED_ALLOW_IPS cannot trust every proxy")
+        if "/" in entry:
+            try:
+                network = ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                raise ValueError("FORWARDED_ALLOW_IPS contains an invalid IP or CIDR") from None
+            if network.prefixlen == 0:
+                raise ValueError("FORWARDED_ALLOW_IPS cannot contain an unbounded network")
+            canonical = str(network)
+        else:
+            try:
+                address = ipaddress.ip_address(entry)
+            except ValueError:
+                raise ValueError("FORWARDED_ALLOW_IPS contains an invalid IP or CIDR") from None
+            if address.is_unspecified:
+                raise ValueError("FORWARDED_ALLOW_IPS cannot contain an unspecified address")
+            canonical = str(address)
+        if canonical in canonical_entries:
+            raise ValueError("FORWARDED_ALLOW_IPS contains a duplicate entry")
+        canonical_entries.append(canonical)
+    return ",".join(canonical_entries)
+
+
+def _subscription_production(
+    values: Mapping[str, str],
+) -> SubscriptionProductionSettings | None:
+    configured = {name: values.get(name, "").strip() for name in _SUBSCRIPTION_SETTING_NAMES}
+    if not any(configured.values()):
+        return None
+    if any(not value for value in configured.values()):
+        raise ValueError("subscription production configuration is incomplete")
+
+    security = _subscription_security(values)
+    if security is None:  # Defensive: the complete-set check above makes this unreachable.
+        raise ValueError("subscription production configuration is incomplete")
+    try:
+        delivery = ResendConfirmationSettings.from_environment(values)
+    except ConfirmationDeliveryConfigurationError:
+        raise ValueError("subscription confirmation delivery configuration is invalid") from None
+    return SubscriptionProductionSettings(
+        security=security,
+        confirmation_delivery=delivery,
+        forwarded_allow_ips=_trusted_proxy_allowlist(configured["FORWARDED_ALLOW_IPS"]),
+    )
+
+
 @dataclass(frozen=True)
 class DeliverySettings:
     """Deployment settings loaded explicitly when the Uvicorn factory runs."""
@@ -96,7 +181,7 @@ class DeliverySettings:
     frontend_origin: str
     docs_enabled: bool = True
     pagination_cursor_secret: bytes | None = field(default=None, repr=False)
-    subscription_security: SubscriptionSecuritySettings | None = field(default=None, repr=False)
+    subscription: SubscriptionProductionSettings | None = field(default=None, repr=False)
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> DeliverySettings:
@@ -122,5 +207,5 @@ class DeliverySettings:
             frontend_origin=_validate_frontend_origin(raw_origin),
             docs_enabled=docs_enabled,
             pagination_cursor_secret=cursor_secret,
-            subscription_security=_subscription_security(values),
+            subscription=_subscription_production(values),
         )
