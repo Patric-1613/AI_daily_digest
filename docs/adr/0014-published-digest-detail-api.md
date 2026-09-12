@@ -87,11 +87,11 @@ async def get_published_digest(self, digest_id: uuid.UUID) -> Digest | None:
 
 ### 5. Scope & Deferred Structured Change Association
 
-This decision specifically exposes the published digest's grounded prose claims, validation status, and official clickable source citations. Direct relational linkage from `digest_claims` to `changes` (via a new `change_id` foreign key on `digest_claims`, migration, drafting association in `draft_claims.py`, and structured `subject`/`field`/`change_type`/`previous`/`current` projections) is explicitly deferred to a dedicated follow-up ADR and issue. Separating delivery API exposure from persistence schema migrations ensures short-lived, reviewable PR boundaries.
+This decision specifically exposes the published digest's grounded prose claims, validation status, and official clickable source citations. Direct relational linkage from `digest_claims` to `changes` (via a new `change_id` foreign key on `digest_claims`, migration, drafting association in `draft_claims.py`, and structured `subject`/`field`/`change_type`/`previous`/`current` projections) is explicitly tracked and deferred to follow-up issue #122 ("feat(intelligence): link digest claims to originating changes and surface structured before/after diffs"). Separating delivery API exposure from persistence schema migrations ensures short-lived, reviewable PR boundaries.
 
 ## Consequences
 
 - The public API now provides complete, evidence-traceable detail for published digests including direct canonical source URLs.
 - Consumers can render grounded claims and navigate directly to official sources.
 - Draft and review digests remain completely private and unreachable via the public HTTP interface.
-- Follow-up work will add the `change_id` relational link to support structured before/after diff representations in the UI.
+- Follow-up work in issue #122 will add the `change_id` relational link to support structured before/after diff representations in the UI.
