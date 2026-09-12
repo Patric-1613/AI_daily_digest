@@ -266,14 +266,22 @@ describe("AI Daily Digest shell", () => {
     await act(async () => root.unmount());
   });
 
-  it("retries a failed digest detail request", async () => {
+  it("surfaces a citation-integrity failure through the retryable detail error", async () => {
     let detailAttempts = 0;
     const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
       const url = new URL(String(input));
       if (url.pathname === "/v1/digests") return digestJsonResponse([firstDigest], null);
       if (url.pathname.startsWith("/v1/digests/")) {
         detailAttempts += 1;
-        if (detailAttempts === 1) return new Response(null, { status: 503 });
+        if (detailAttempts === 1) {
+          const invalidDetail = digestDetail(firstDigest, "Must not render as a successful claim");
+          invalidDetail.claims[0]!.citations = [{
+            snapshot_id: "unsafe",
+            canonical_url: "javascript:alert(1)",
+            source_title: "Unsafe source",
+          }];
+          return new Response(JSON.stringify(invalidDetail), { status: 200 });
+        }
         return new Response(JSON.stringify(digestDetail(firstDigest, "Recovered claim")), {
           status: 200,
         });
@@ -293,10 +301,19 @@ describe("AI Daily Digest shell", () => {
       `View details for ${firstDigest.title}`,
     ).click());
     await waitForText(container, "Digest details are unavailable");
+    expect(container.textContent).not.toContain("No public source link is available");
+    expect(container.textContent).not.toContain("Must not render as a successful claim");
 
     await act(async () => buttonWithText(container, "Try again").click());
     await waitForText(container, "Recovered claim");
     expect(detailAttempts).toBe(2);
+
+    await act(async () => buttonWithLabel(
+      container,
+      `Close details for ${firstDigest.title}`,
+    ).click());
+    expect(container.textContent).not.toContain("Recovered claim");
+    expect(buttonWithLabel(container, `View details for ${firstDigest.title}`)).toBeTruthy();
     await act(async () => root.unmount());
   });
 });

@@ -5,6 +5,7 @@ export interface DigestSummary {
   title: string;
 }
 
+// "unsupported" is defensive: published detail should currently return supported claims only.
 export type DigestClaimValidationStatus = "supported" | "unsupported";
 
 export interface DigestCitation {
@@ -117,14 +118,18 @@ function parseClaim(value: unknown): DigestClaim {
     throw new DigestsApiError("The digest service returned an invalid response.");
   }
   const rawCitations = Array.isArray(value.citations) ? value.citations : [];
+  const citations = rawCitations
+    .map(parseCitation)
+    .filter((citation): citation is DigestCitation => citation !== null);
+  if (citations.length === 0) {
+    throw new DigestsApiError("The digest service returned an invalid response.");
+  }
   return {
     id: requiredString(value, "id"),
     text: requiredString(value, "text"),
     validation_status: value.validation_status,
     citation_snapshot_ids: optionalStringArray(value, "citation_snapshot_ids"),
-    citations: rawCitations
-      .map(parseCitation)
-      .filter((citation): citation is DigestCitation => citation !== null),
+    citations,
   };
 }
 

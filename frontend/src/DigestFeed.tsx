@@ -95,7 +95,7 @@ export function DigestFeed({
                     type="button"
                     aria-controls={detailPanelId}
                     aria-expanded={isSelected}
-                    aria-label={`View details for ${digest.title}`}
+                    aria-label={`${isSelected ? "Close" : "View"} details for ${digest.title}`}
                     onClick={() => onSelectDigest(digest.id)}
                   >
                     {isSelected ? "Details open" : "View details"}
@@ -146,26 +146,20 @@ export function DigestFeed({
                               <span className="validationStatus">{claim.validation_status}</span>
                             </div>
                             <p>{claim.text}</p>
-                            {claim.citations.length > 0 ? (
-                              <ul className="citationList" aria-label="Official sources">
-                                {claim.citations.map((citation) => (
-                                  <li key={`${claim.id}-${citation.snapshot_id}`}>
-                                    <a
-                                      href={citation.canonical_url}
-                                      target="_blank"
-                                      rel="noreferrer noopener"
-                                      aria-label={`Read official source: ${citation.source_title}`}
-                                    >
-                                      {citation.source_title} <span aria-hidden="true">↗</span>
-                                    </a>
-                                  </li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <p className="citationUnavailable">
-                                No public source link is available for this claim.
-                              </p>
-                            )}
+                            <ul className="citationList" aria-label="Official sources">
+                              {claim.citations.map((citation) => (
+                                <li key={`${claim.id}-${citation.snapshot_id}`}>
+                                  <a
+                                    href={citation.canonical_url}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                    aria-label={`Read official source: ${citation.source_title}`}
+                                  >
+                                    {citation.source_title} <span aria-hidden="true">↗</span>
+                                  </a>
+                                </li>
+                              ))}
+                            </ul>
                           </li>
                         ))}
                       </ol>

@@ -118,29 +118,56 @@ describe("digest detail API client", () => {
     expect(requestedUrls).toEqual([`https://api.example.com/v1/digests/${digest.id}`]);
   });
 
-  it("tolerates the snapshot-id-only contract without inventing citation links", async () => {
-    const legacyPayload = {
+  it("rejects a javascript citation when filtering leaves no usable citation", async () => {
+    const unsafePayload = {
       ...detail,
       claims: [{
         ...detail.claims[0],
-        citations: undefined,
+        citations: [{
+          snapshot_id: "unsafe",
+          canonical_url: "javascript:alert(1)",
+          source_title: "Unsafe source",
+        }],
       }],
     };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify(legacyPayload), { status: 200 }));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(unsafePayload), { status: 200 }));
 
-    const result = await fetchDigestDetail({
+    await expect(fetchDigestDetail({
       apiBaseUrl: "https://api.example.com",
       digestId: digest.id,
       fetchImpl: fetchMock as FetchDigests,
-    });
-
-    expect(result.claims[0]?.citation_snapshot_ids).toEqual([
-      "01a032cd-23e0-76d3-a27c-f608ccc02226",
-    ]);
-    expect(result.claims[0]?.citations).toEqual([]);
+    })).rejects.toThrow(DigestsApiError);
   });
 
-  it("drops unsafe or incomplete citation links while retaining safe HTTP links", async () => {
+  it.each([
+    ["an empty source title", [{
+      snapshot_id: "empty-title",
+      canonical_url: "https://example.com/source",
+      source_title: "",
+    }]],
+    ["a non-HTTP URL", [{
+      snapshot_id: "non-http",
+      canonical_url: "ftp://example.com/source",
+      source_title: "Unsupported protocol",
+    }]],
+    ["a missing citations field", undefined],
+  ])("rejects a claim with %s", async (_caseName, citations) => {
+    const invalidPayload = {
+      ...detail,
+      claims: [{ ...detail.claims[0], citations }],
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(invalidPayload), {
+      status: 200,
+    }));
+
+    await expect(fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock as FetchDigests,
+    })).rejects.toThrow(DigestsApiError);
+  });
+
+  it("keeps safe HTTP links when filtering malformed citations", async () => {
     const payload = {
       ...detail,
       claims: [{

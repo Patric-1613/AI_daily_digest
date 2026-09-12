@@ -187,8 +187,14 @@ export default function App({
   }, [digestNextCursor, digestsLoadingMore]);
 
   const selectDigest = useCallback((digestId: string) => {
-    if (digestId === selectedDigestId) return;
     digestDetailController.current?.abort();
+    if (digestId === selectedDigestId) {
+      setSelectedDigestId(null);
+      setDigestDetail(null);
+      setDigestDetailError(null);
+      setDigestDetailLoading(false);
+      return;
+    }
     setSelectedDigestId(digestId);
     setDigestDetail(null);
     setDigestDetailError(null);

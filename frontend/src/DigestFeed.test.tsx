@@ -104,6 +104,7 @@ describe("DigestFeed states", () => {
 
     expect(html).toContain("Digest details are unavailable");
     expect(html).toContain("Try again");
+    expect(html).not.toContain("No public source link is available");
   });
 
   it("renders an explicit empty-claims state", () => {
@@ -146,25 +147,4 @@ describe("DigestFeed states", () => {
     expect(html).toContain('aria-label="Read official source: Introducing Claude 2.1"');
   });
 
-  it("does not invent a link for snapshot-id-only claims", () => {
-    const noLinks = {
-      ...detail,
-      claims: [{ ...detail.claims[0]!, citations: [] }],
-    };
-    const html = renderToStaticMarkup(<DigestFeed
-      digests={[digest]}
-      initialLoading={false}
-      loadingMore={false}
-      error={null}
-      nextCursor={null}
-      selectedDigestId={digest.id}
-      detail={noLinks}
-      detailLoading={false}
-      detailError={null}
-      {...handlers}
-    />);
-
-    expect(html).toContain("No public source link is available for this claim");
-    expect(html).not.toContain("<a ");
-  });
 });
