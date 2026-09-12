@@ -536,6 +536,7 @@ class DigestClaim(BaseModel):
     automatically."""
 
     id: Uuid7Id
+    change_id: Uuid7Id | None = None
     text: str
     citation_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
     citations: list[DigestCitation] = Field(default_factory=list)

@@ -41,6 +41,7 @@ class DigestClaimDetail(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: Uuid7Id
+    change_id: Uuid7Id | None = None
     text: str
     citations: list[DigestCitationDetail] = Field(min_length=1)
     validation_status: ClaimValidationStatus

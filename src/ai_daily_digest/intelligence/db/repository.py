@@ -810,6 +810,7 @@ class PostgresFactStore:
             digest_claims = [
                 DigestClaim(
                     id=c.id,
+                    change_id=c.change_id,
                     text=c.text,
                     citation_snapshot_ids=citation_snapshot_ids_by_claim.get(c.id, []),
                     citations=citations_by_claim.get(c.id, []),
@@ -903,6 +904,7 @@ class PostgresFactStore:
             c_model = DigestClaimModel(
                 id=claim.id,
                 digest_id=digest.id,
+                change_id=claim.change_id,
                 position=claim_pos,
                 text=claim.text,
                 validation_status=claim.validation_status.value,

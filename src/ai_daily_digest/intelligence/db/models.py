@@ -292,6 +292,11 @@ class DigestClaimModel(Base):
         ForeignKey("digests.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    change_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("changes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     validation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
@@ -305,6 +310,7 @@ class DigestClaimModel(Base):
             name="chk_digest_claims_validation_status",
         ),
         Index("idx_digest_claims_digest_id", "digest_id"),
+        Index("idx_digest_claims_change_id", "change_id"),
     )
 
 

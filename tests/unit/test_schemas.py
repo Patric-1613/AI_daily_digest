@@ -850,3 +850,33 @@ def test_digest_date_is_immutable() -> None:
     digest = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="Test")
     with pytest.raises(ValidationError):
         digest.digest_date = date(2026, 1, 1)
+
+
+def test_digest_claim_change_id_defaults_to_none() -> None:
+    claim = DigestClaim(
+        id=CLAIM_1,
+        text="Test claim text",
+        citation_snapshot_ids=[SNAPSHOT_1],
+    )
+    assert claim.change_id is None
+
+
+def test_digest_claim_change_id_accepts_uuid7() -> None:
+    claim = DigestClaim(
+        id=CLAIM_1,
+        change_id=CHANGE_1,
+        text="Test claim text",
+        citation_snapshot_ids=[SNAPSHOT_1],
+    )
+    assert claim.change_id == CHANGE_1
+
+
+def test_digest_claim_change_id_serialization() -> None:
+    claim = DigestClaim(
+        id=CLAIM_1,
+        change_id=CHANGE_1,
+        text="Test claim text",
+        citation_snapshot_ids=[SNAPSHOT_1],
+    )
+    dumped = claim.model_dump(mode="json")
+    assert dumped["change_id"] == str(CHANGE_1)

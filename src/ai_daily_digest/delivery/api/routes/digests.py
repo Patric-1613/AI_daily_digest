@@ -195,6 +195,7 @@ async def get_digest_detail(
         claims.append(
             DigestClaimDetail(
                 id=c.id,
+                change_id=c.change_id,
                 text=c.text,
                 citations=citations,
                 validation_status=c.validation_status,
