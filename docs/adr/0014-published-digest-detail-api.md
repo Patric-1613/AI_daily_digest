@@ -70,9 +70,10 @@ The endpoint serves public consumers and must strictly enforce publication bound
 - Each claim includes its `id`, grounded `text`, list of `citations` (`snapshot_id`, `canonical_url`, `source_title`), and explicit `validation_status` (`"supported"`).
 - Public responses never contain raw LLM prompts, intermediate reasoning tokens, vector embeddings, database credentials, or subscriber email addresses.
 
-### 4. Shared Repository Protocol
+### 4. Shared Schemas & Repository Protocol
 
-The `DigestFeedRepository` protocol in `src/ai_daily_digest/shared/repositories.py` is extended with:
+- `DigestCitation` is added to `src/ai_daily_digest/shared/schemas.py` and referenced as `citations: list[DigestCitation] = Field(default_factory=list)` on `DigestClaim` to provide cross-module typed citation metadata alongside `citation_snapshot_ids`.
+- The `DigestFeedRepository` protocol in `src/ai_daily_digest/shared/repositories.py` is extended with:
 
 ```python
 async def get_published_digest(self, digest_id: uuid.UUID) -> Digest | None:
@@ -82,10 +83,15 @@ async def get_published_digest(self, digest_id: uuid.UUID) -> Digest | None:
     """
 ```
 
-`PostgresFactStore` in `src/ai_daily_digest/intelligence/db/repository.py` implements this method by querying `DigestModel` with single-query batch hydration joining `DocumentSnapshotRow` and `SourceItemRow`, filtering by `id == digest_id` and `status == DigestStatus.PUBLISHED.value`.
+`PostgresFactStore` in `src/ai_daily_digest/intelligence/db/repository.py` implements this method by querying `DigestModel` with single-query batch hydration via INNER JOINs with `DocumentSnapshotRow` and `SourceItemRow`, filtering by `id == digest_id` and `status == DigestStatus.PUBLISHED.value`.
+
+### 5. Scope & Deferred Structured Change Association
+
+This decision specifically exposes the published digest's grounded prose claims, validation status, and official clickable source citations. Direct relational linkage from `digest_claims` to `changes` (via a new `change_id` foreign key on `digest_claims`, migration, drafting association in `draft_claims.py`, and structured `subject`/`field`/`change_type`/`previous`/`current` projections) is explicitly deferred to a dedicated follow-up ADR and issue. Separating delivery API exposure from persistence schema migrations ensures short-lived, reviewable PR boundaries.
 
 ## Consequences
 
 - The public API now provides complete, evidence-traceable detail for published digests including direct canonical source URLs.
 - Consumers can render grounded claims and navigate directly to official sources.
 - Draft and review digests remain completely private and unreachable via the public HTTP interface.
+- Follow-up work will add the `change_id` relational link to support structured before/after diff representations in the UI.

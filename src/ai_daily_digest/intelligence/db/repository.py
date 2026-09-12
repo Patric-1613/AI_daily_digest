@@ -776,11 +776,11 @@ class PostgresFactStore:
                     SourceItemRow.canonical_url,
                     SourceItemRow.title,
                 )
-                .outerjoin(
+                .join(
                     DocumentSnapshotRow,
                     DocumentSnapshotRow.id == DigestClaimCitationModel.snapshot_id,
                 )
-                .outerjoin(SourceItemRow, SourceItemRow.id == DocumentSnapshotRow.source_item_id)
+                .join(SourceItemRow, SourceItemRow.id == DocumentSnapshotRow.source_item_id)
                 .where(DigestClaimCitationModel.claim_id.in_(claim_ids))
                 .order_by(
                     DigestClaimCitationModel.claim_id, DigestClaimCitationModel.position.asc()
