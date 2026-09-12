@@ -5,6 +5,26 @@ export interface DigestSummary {
   title: string;
 }
 
+export type DigestClaimValidationStatus = "supported" | "unsupported";
+
+export interface DigestCitation {
+  snapshot_id: string;
+  canonical_url: string;
+  source_title: string;
+}
+
+export interface DigestClaim {
+  id: string;
+  text: string;
+  validation_status: DigestClaimValidationStatus;
+  citation_snapshot_ids: string[];
+  citations: DigestCitation[];
+}
+
+export interface DigestDetail extends DigestSummary {
+  claims: DigestClaim[];
+}
+
 export interface DigestsPage {
   items: DigestSummary[];
   next_cursor: string | null;
@@ -32,6 +52,13 @@ interface FetchDigestsPageOptions {
   fetchImpl?: FetchDigests;
 }
 
+interface FetchDigestDetailOptions {
+  apiBaseUrl: string;
+  digestId: string;
+  signal?: AbortSignal;
+  fetchImpl?: FetchDigests;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -42,6 +69,63 @@ function requiredString(record: Record<string, unknown>, key: string): string {
     throw new DigestsApiError("The digest service returned an invalid response.");
   }
   return value;
+}
+
+function optionalStringArray(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+function safeHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+function parseCitation(value: unknown): DigestCitation | null {
+  if (!isRecord(value)) return null;
+  const canonicalUrl = safeHttpUrl(value.canonical_url);
+  const snapshotId = value.snapshot_id;
+  const sourceTitle = value.source_title;
+  if (
+    canonicalUrl === null
+    || typeof snapshotId !== "string"
+    || snapshotId.length === 0
+    || typeof sourceTitle !== "string"
+    || sourceTitle.trim().length === 0
+  ) {
+    return null;
+  }
+  return {
+    snapshot_id: snapshotId,
+    canonical_url: canonicalUrl,
+    source_title: sourceTitle.trim(),
+  };
+}
+
+function parseClaim(value: unknown): DigestClaim {
+  if (!isRecord(value)) {
+    throw new DigestsApiError("The digest service returned an invalid response.");
+  }
+  if (value.validation_status !== "supported" && value.validation_status !== "unsupported") {
+    throw new DigestsApiError("The digest service returned an invalid response.");
+  }
+  const rawCitations = Array.isArray(value.citations) ? value.citations : [];
+  return {
+    id: requiredString(value, "id"),
+    text: requiredString(value, "text"),
+    validation_status: value.validation_status,
+    citation_snapshot_ids: optionalStringArray(value, "citation_snapshot_ids"),
+    citations: rawCitations
+      .map(parseCitation)
+      .filter((citation): citation is DigestCitation => citation !== null),
+  };
 }
 
 function isCalendarDate(value: string): boolean {
@@ -82,6 +166,21 @@ function parsePage(value: unknown): DigestsPage {
   };
 }
 
+function parseDetail(value: unknown): DigestDetail {
+  const summary = parseDigest(value);
+  if (!isRecord(value) || !Array.isArray(value.claims)) {
+    throw new DigestsApiError("The digest service returned an invalid response.");
+  }
+  return {
+    ...summary,
+    claims: value.claims.map(parseClaim),
+  };
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 export async function fetchDigestsPage({
   apiBaseUrl,
   cursor,
@@ -106,7 +205,7 @@ export async function fetchDigestsPage({
       signal,
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    if (isAbortError(error)) throw error;
     throw new DigestsApiError("The digest service could not be reached.");
   }
 
@@ -124,6 +223,56 @@ export async function fetchDigestsPage({
     throw new DigestsApiError("The digest service returned an invalid response.");
   }
   return parsePage(payload);
+}
+
+export async function fetchDigestDetail({
+  apiBaseUrl,
+  digestId,
+  signal,
+  fetchImpl = fetch,
+}: FetchDigestDetailOptions): Promise<DigestDetail> {
+  if (!digestId) throw new DigestsApiError("The digest link is invalid.", 422);
+
+  let url: URL;
+  try {
+    const normalizedBaseUrl = apiBaseUrl.endsWith("/") ? apiBaseUrl : `${apiBaseUrl}/`;
+    url = new URL(`v1/digests/${encodeURIComponent(digestId)}`, normalizedBaseUrl);
+  } catch {
+    throw new DigestsApiError("The configured API address is invalid.");
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    throw new DigestsApiError("The digest details could not be reached.");
+  }
+
+  if (!response.ok) {
+    const message = response.status === 404
+      ? "This published digest is no longer available."
+      : response.status === 422
+        ? "The digest link is invalid."
+        : "The digest details could not be loaded. Please try again.";
+    throw new DigestsApiError(message, response.status);
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new DigestsApiError("The digest service returned an invalid response.");
+  }
+
+  const detail = parseDetail(payload);
+  if (detail.id !== digestId) {
+    throw new DigestsApiError("The digest service returned an invalid response.");
+  }
+  return detail;
 }
 
 export function mergeDigests(

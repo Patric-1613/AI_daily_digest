@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DigestFeed } from "./DigestFeed";
-import { DigestsApiError, fetchDigestsPage, mergeDigests } from "./api/digests";
-import type { DigestSummary } from "./api/digests";
+import {
+  DigestsApiError,
+  fetchDigestDetail,
+  fetchDigestsPage,
+  mergeDigests,
+} from "./api/digests";
+import type { DigestDetail, DigestSummary } from "./api/digests";
 import { fetchUpdatesPage, mergeUpdates, UpdatesApiError } from "./api/updates";
 import type { UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
@@ -22,6 +27,12 @@ export default function App({
   const [digestsError, setDigestsError] = useState<string | null>(null);
   const [digestRequestVersion, setDigestRequestVersion] = useState(0);
   const digestLoadMoreController = useRef<AbortController | null>(null);
+  const [selectedDigestId, setSelectedDigestId] = useState<string | null>(null);
+  const [digestDetail, setDigestDetail] = useState<DigestDetail | null>(null);
+  const [digestDetailLoading, setDigestDetailLoading] = useState(false);
+  const [digestDetailError, setDigestDetailError] = useState<string | null>(null);
+  const [digestDetailRequestVersion, setDigestDetailRequestVersion] = useState(0);
+  const digestDetailController = useRef<AbortController | null>(null);
   const [updates, setUpdates] = useState<UpdateSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -67,6 +78,31 @@ export default function App({
       digestLoadMoreController.current?.abort();
     };
   }, [digestRequestVersion]);
+
+  useEffect(() => {
+    if (selectedDigestId === null) return undefined;
+    const controller = new AbortController();
+    digestDetailController.current = controller;
+    void fetchDigestDetail({
+      apiBaseUrl: publicConfig.apiBaseUrl,
+      digestId: selectedDigestId,
+      signal: controller.signal,
+    }).then((loadedDetail) => {
+      if (controller.signal.aborted) return;
+      setDigestDetail(loadedDetail);
+      setDigestDetailError(null);
+    }).catch((loadError: unknown) => {
+      if (controller.signal.aborted) return;
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      const message = loadError instanceof DigestsApiError
+        ? loadError.message
+        : "The digest details could not be reached.";
+      setDigestDetailError(message);
+    }).finally(() => {
+      if (!controller.signal.aborted) setDigestDetailLoading(false);
+    });
+    return () => controller.abort();
+  }, [digestDetailRequestVersion, selectedDigestId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -150,6 +186,31 @@ export default function App({
     }
   }, [digestNextCursor, digestsLoadingMore]);
 
+  const selectDigest = useCallback((digestId: string) => {
+    if (digestId === selectedDigestId) return;
+    digestDetailController.current?.abort();
+    setSelectedDigestId(digestId);
+    setDigestDetail(null);
+    setDigestDetailError(null);
+    setDigestDetailLoading(true);
+  }, [selectedDigestId]);
+
+  const closeDigestDetail = useCallback(() => {
+    digestDetailController.current?.abort();
+    setSelectedDigestId(null);
+    setDigestDetail(null);
+    setDigestDetailError(null);
+    setDigestDetailLoading(false);
+  }, []);
+
+  const retryDigestDetail = useCallback(() => {
+    digestDetailController.current?.abort();
+    setDigestDetail(null);
+    setDigestDetailError(null);
+    setDigestDetailLoading(true);
+    setDigestDetailRequestVersion((version) => version + 1);
+  }, []);
+
   return (
     <main>
       <header className="siteHeader">
@@ -184,8 +245,15 @@ export default function App({
               loadingMore={digestsLoadingMore}
               error={digestsError}
               nextCursor={digestNextCursor}
+              selectedDigestId={selectedDigestId}
+              detail={digestDetail}
+              detailLoading={digestDetailLoading}
+              detailError={digestDetailError}
               onRetry={() => void retryInitialDigests()}
               onLoadMore={() => void loadMoreDigests()}
+              onSelectDigest={selectDigest}
+              onCloseDetail={closeDigestDetail}
+              onRetryDetail={retryDigestDetail}
             />
             <UpdatesFeed
               updates={updates}

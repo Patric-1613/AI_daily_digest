@@ -1,16 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   DigestsApiError,
+  fetchDigestDetail,
   fetchDigestsPage,
   mergeDigests,
 } from "./digests";
-import type { DigestSummary, FetchDigests } from "./digests";
+import type { DigestDetail, DigestSummary, FetchDigests } from "./digests";
 
 const digest: DigestSummary = {
   id: "01a034ed-e100-7e73-ab06-1fecafdc495c",
   digest_date: "2026-08-24",
   status: "published",
   title: "AI Daily Digest — 24 August 2026",
+};
+
+const detail: DigestDetail = {
+  ...digest,
+  claims: [{
+    id: "01a034ed-e100-74d1-8508-247704ced117",
+    text: "Claude increased its context window from 100,000 to 200,000 tokens.",
+    validation_status: "supported",
+    citation_snapshot_ids: ["01a032cd-23e0-76d3-a27c-f608ccc02226"],
+    citations: [{
+      snapshot_id: "01a032cd-23e0-76d3-a27c-f608ccc02226",
+      canonical_url: "https://www.anthropic.com/news/claude-2-1",
+      source_title: "Introducing Claude 2.1",
+    }],
+  }],
 };
 
 describe("digests API client", () => {
@@ -78,6 +94,119 @@ describe("digests API client", () => {
       status: 503,
       message: "The digest service returned an error. Please try again.",
     });
+  });
+});
+
+describe("digest detail API client", () => {
+  it("requests and maps the published detail contract", async () => {
+    const requestedUrls: string[] = [];
+    const fetchMock: FetchDigests = vi.fn(async (input) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify(detail), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    const result = await fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock,
+    });
+
+    expect(result).toEqual(detail);
+    expect(requestedUrls).toEqual([`https://api.example.com/v1/digests/${digest.id}`]);
+  });
+
+  it("tolerates the snapshot-id-only contract without inventing citation links", async () => {
+    const legacyPayload = {
+      ...detail,
+      claims: [{
+        ...detail.claims[0],
+        citations: undefined,
+      }],
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(legacyPayload), { status: 200 }));
+
+    const result = await fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock as FetchDigests,
+    });
+
+    expect(result.claims[0]?.citation_snapshot_ids).toEqual([
+      "01a032cd-23e0-76d3-a27c-f608ccc02226",
+    ]);
+    expect(result.claims[0]?.citations).toEqual([]);
+  });
+
+  it("drops unsafe or incomplete citation links while retaining safe HTTP links", async () => {
+    const payload = {
+      ...detail,
+      claims: [{
+        ...detail.claims[0],
+        citations: [
+          ...detail.claims[0]!.citations,
+          {
+            snapshot_id: "unsafe",
+            canonical_url: "javascript:alert(1)",
+            source_title: "Unsafe source",
+          },
+          {
+            snapshot_id: "missing-title",
+            canonical_url: "https://example.com/source",
+            source_title: "",
+          },
+        ],
+      }],
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
+
+    const result = await fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock as FetchDigests,
+    });
+
+    expect(result.claims[0]?.citations).toEqual(detail.claims[0]?.citations);
+  });
+
+  it.each([
+    [404, "This published digest is no longer available."],
+    [422, "The digest link is invalid."],
+    [503, "The digest details could not be loaded. Please try again."],
+  ])("maps HTTP %s to a safe message", async (status, message) => {
+    const fetchMock = vi.fn(async () => new Response("private server detail", { status }));
+
+    await expect(fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock as FetchDigests,
+    })).rejects.toMatchObject({ status, message });
+  });
+
+  it("rejects a mismatched or unpublished detail payload", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      ...detail,
+      id: "01a034ed-e100-7e73-ab06-1fecafdc495d",
+    }), { status: 200 }));
+
+    await expect(fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock as FetchDigests,
+    })).rejects.toThrow(DigestsApiError);
+  });
+
+  it("passes through AbortError so stale-request owners can ignore it", async () => {
+    const aborted = new DOMException("stale", "AbortError");
+    const fetchMock = vi.fn(async () => { throw aborted; });
+
+    await expect(fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock as FetchDigests,
+    })).rejects.toBe(aborted);
   });
 });
 
