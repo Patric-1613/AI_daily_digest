@@ -23,11 +23,19 @@ values and confirmed that the subscription routes are mounted:
 - [ ] Confirm that the generic subscribe response does not reveal whether the address already
       exists or expose a raw confirmation token.
 - [ ] Open the delivered confirmation link and complete confirmation through the browser's POST
-      flow.
+      flow. Verify the raw token arrived only after `#token=` in the URL fragment, never in a query
+      parameter, and that the page removed the fragment before submitting the JSON POST.
+- [ ] For the same approved team address, open an unsubscribe link issued by the approved
+      application delivery path. Verify it also carries the raw token only after `#token=` and
+      complete unsubscribe through the browser's JSON POST flow.
+- [ ] Confirm the unsubscribe result is successful. If no approved application path has delivered
+      an unsubscribe token yet, record this step as blocked and leave issue #53 open. Do not extract
+      a token from the database or logs, manually mint one, add a temporary endpoint, or start
+      campaign/RFC 8058 work to make the smoke pass.
 - [ ] Confirm that no email address, raw token, API key, provider payload, full confirmation URL,
       or database URL appears in application logs or recorded smoke-test evidence.
-- [ ] Set `VITE_SUBSCRIPTIONS_ENABLED=true` in Render only after the subscription and confirmation
-      smoke test passes; do not commit the flag as enabled in Git.
+- [ ] Set `VITE_SUBSCRIPTIONS_ENABLED=true` in Render only after the complete subscribe, confirm,
+      and unsubscribe smoke test passes; do not commit the flag as enabled in Git.
 
 ## Ownership and evidence
 
