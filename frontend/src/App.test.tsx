@@ -95,6 +95,7 @@ function buttonWithLabel(container: HTMLElement, label: string): HTMLButtonEleme
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
@@ -318,6 +319,14 @@ describe("AI Daily Digest shell", () => {
   });
 
   it("resets cursor, closes open detail, and never sends stale cursor when period changes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-12T12:00:00Z"));
+
+    let resolveFilteredPage!: (value: Response) => void;
+    const filteredPagePromise = new Promise<Response>((resolve) => {
+      resolveFilteredPage = resolve;
+    });
+
     const requestedDigestUrls: string[] = [];
     const secondDigest: DigestSummary = {
       id: "01a034ed-e100-7e73-ab06-1fecafdc495e",
@@ -332,7 +341,7 @@ describe("AI Daily Digest shell", () => {
         requestedDigestUrls.push(url.href);
         const dateFrom = url.searchParams.get("date_from");
         if (dateFrom) {
-          return digestJsonResponse([secondDigest], null);
+          return filteredPagePromise;
         }
         return digestJsonResponse([firstDigest], "cursor.page2.all");
       }
@@ -373,20 +382,29 @@ describe("AI Daily Digest shell", () => {
       }
     });
 
-    // Wait for filtered digest to appear
-    await waitForText(container, secondDigest.title);
-
-    // 1. Proves open detail is closed and stale detail content is removed
+    // IMMEDIATE assertions while filtered request is STILL PENDING:
+    // 1. Proves open detail is closed and old items/detail are immediately removed
     expect(container.textContent).not.toContain("Initial claim detail");
     expect(container.textContent).not.toContain(firstDigest.title);
+    expect(container.textContent).toContain("Loading published digests");
 
-    // 2. Proves no stale cursor was sent with the new filtered query
+    // 2. Proves old load-more button is immediately absent/non-actionable
+    expect(container.querySelector("button.loadMoreButton")).toBeNull();
+
+    // 3. Proves filtered query was dispatched without any stale cursor
     const filteredCall = requestedDigestUrls.find((call) => call.includes("date_from")) ?? "";
     const parsedFilteredUrl = new URL(filteredCall);
     expect(parsedFilteredUrl.searchParams.get("cursor")).toBeNull();
     expect(parsedFilteredUrl.searchParams.get("date_from")).toBe("2026-09-05");
 
-    // 3. Proves old cursor is no longer actionable (next_cursor is null in new response)
+    // Now resolve the filtered response
+    await act(async () => {
+      resolveFilteredPage(digestJsonResponse([secondDigest], null));
+    });
+
+    // Wait for filtered digest to appear
+    await waitForText(container, secondDigest.title);
+    expect(container.textContent).toContain(secondDigest.title);
     expect(container.querySelector("button.loadMoreButton")).toBeNull();
 
     await act(async () => root.unmount());
