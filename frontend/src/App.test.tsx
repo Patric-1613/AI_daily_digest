@@ -94,19 +94,19 @@ describe("AI Daily Digest shell", () => {
     expect(html).toContain("Source-backed AI industry monitoring");
     expect(html).toContain("0 digests loaded");
     expect(html).toContain("0 updates loaded");
-    expect(html).toContain("Illustrative model explorer");
-    expect(html).toContain("Ask about today");
-    expect(html).toContain("Illustrative trust metrics");
     expect(html).toContain("Loading published digests");
     expect(html).toContain("Loading source updates");
   });
 
-  it.each(["Claude", "GPT-4", "Gemini", "DeepSeek", "Llama", "Grok"])(
-    "includes the %s model family",
-    (model) => {
-      expect(renderToStaticMarkup(<App />)).toContain(model);
-    },
-  );
+  it("does not present non-functional controls or fabricated trust figures", () => {
+    const html = renderToStaticMarkup(<App />);
+
+    expect(html).not.toContain("Illustrative model explorer");
+    expect(html).not.toContain("Ask about today");
+    expect(html).not.toContain("40 claims checked");
+    expect(html).not.toContain("38 sourced");
+    expect(html).not.toContain("How this works");
+  });
 
   it("runs initial failure, abort-aware retry, and cursor load more through the mounted App", async () => {
     const updateResponses = [
