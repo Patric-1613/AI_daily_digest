@@ -1,6 +1,6 @@
 # 0015 — Digest claim linkage to originating changes and structured diff projection
 
-Status: Accepted (authored by Person B; agreed by Person A and Person C)
+Status: Proposed (authored by Person B; pending Person C formal sign-off)
 Date: 2026-09-12
 
 ## Context

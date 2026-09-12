@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Self
 
 from pydantic import (
     AfterValidator,
@@ -556,6 +556,17 @@ class DigestClaim(BaseModel):
     citation_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
     citations: list[DigestCitation] = Field(default_factory=list)
     validation_status: ClaimValidationStatus = ClaimValidationStatus.PENDING
+
+    @model_validator(mode="after")
+    def _validate_change_linkage(self) -> Self:
+        if self.change is not None:
+            if self.change_id is None:
+                raise ValueError("change_id must be set when change is provided")
+            if self.change_id != self.change.id:
+                raise ValueError(
+                    f"change_id ({self.change_id}) must match change.id ({self.change.id})"
+                )
+        return self
 
 
 class Digest(BaseModel):

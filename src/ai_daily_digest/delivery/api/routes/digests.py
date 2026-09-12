@@ -134,6 +134,26 @@ async def get_digests(  # pylint: disable=too-many-arguments,too-many-positional
     return Page[DigestSummary](items=summaries, next_cursor=next_cursor)
 
 
+def _project_change_detail(claim: DigestClaim) -> DigestClaimChangeDetail | None:
+    """Project a structured change diff, returning None if unlinked or invalid."""
+    if claim.change is None:
+        return None
+    if claim.change_id is None or claim.change_id != claim.change.id:
+        return None
+    try:
+        return DigestClaimChangeDetail(
+            id=claim.change.id,
+            company=claim.change.company,
+            product=claim.change.product,
+            field=claim.change.field,
+            change_type=claim.change.change_type,
+            previous_value=claim.change.previous_value,
+            current_value=claim.change.current_value,
+        )
+    except (ValidationError, ValueError):
+        return None
+
+
 def _project_claim_detail(claim: DigestClaim) -> DigestClaimDetail | None:
     """Project a shared DigestClaim to DigestClaimDetail, returning None on integrity violation."""
     if claim.validation_status != ClaimValidationStatus.SUPPORTED or not claim.citations:
@@ -150,31 +170,23 @@ def _project_claim_detail(claim: DigestClaim) -> DigestClaimDetail | None:
     except (ValidationError, ValueError):
         return None
 
-    change_detail: DigestClaimChangeDetail | None = None
-    if claim.change is not None:
-        try:
-            change_detail = DigestClaimChangeDetail(
-                id=claim.change.id,
-                company=claim.change.company,
-                product=claim.change.product,
-                field=claim.change.field,
-                change_type=claim.change.change_type,
-                previous_value=claim.change.previous_value,
-                current_value=claim.change.current_value,
-            )
-        except (ValidationError, ValueError):
-            return None
-    elif claim.change_id is not None:
+    change_detail = _project_change_detail(claim)
+    if claim.change is not None and change_detail is None:
+        return None
+    if claim.change is None and claim.change_id is not None:
         return None
 
-    return DigestClaimDetail(
-        id=claim.id,
-        change_id=claim.change_id,
-        change=change_detail,
-        text=claim.text,
-        citations=citations,
-        validation_status=claim.validation_status,
-    )
+    try:
+        return DigestClaimDetail(
+            id=claim.id,
+            change_id=claim.change_id,
+            change=change_detail,
+            text=claim.text,
+            citations=citations,
+            validation_status=claim.validation_status,
+        )
+    except (ValidationError, ValueError):
+        return None
 
 
 @router.get(
