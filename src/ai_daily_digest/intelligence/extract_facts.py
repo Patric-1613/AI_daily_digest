@@ -260,9 +260,8 @@ def _pricing_qualifiers_support_field(field: str, clause: str) -> bool:
         return True
     if has_input:
         return field == "input_price_usd"
-    if has_output:
-        return field == "output_price_usd"
-    return True
+    # has_output is guaranteed True here since (not has_input and not has_output) was handled above
+    return field == "output_price_usd"
 
 
 _CONTEXT_WINDOW_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmM])$")

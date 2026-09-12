@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from ai_daily_digest.intelligence.extract_facts import (
     FactCandidate,
     FactExtractionResponse,
+    _canonicalize_context_window_value,
     _quote_supports_non_disclosure,
     extract_facts,
 )
@@ -1058,6 +1059,8 @@ def test_context_window_invalid_values_fail_closed() -> None:
     """Proves malformed, boolean, negative, float, and ambiguous context window values
     are rejected fail-closed during validation."""
     invalid_cases = [
+        "0",
+        "0.0005k",
         "true",
         "false",
         "True",
@@ -1082,6 +1085,16 @@ def test_context_window_invalid_values_fail_closed() -> None:
                 quoted_span="context window",
                 confidence=0.95,
             )
+
+
+def test_canonicalize_context_window_value_zero_and_fractional_token_regression() -> None:
+    """Regression test ensuring zero and non-integer/fractional token expressions
+    like '0' and '0.0005k' fail closed."""
+    with pytest.raises(ValueError, match="Context window must be positive integer"):
+        _canonicalize_context_window_value("0")
+
+    with pytest.raises(ValueError, match="Invalid context window value"):
+        _canonicalize_context_window_value("0.0005k")
 
 
 def test_conflicting_same_field_candidates_fail_closed() -> None:

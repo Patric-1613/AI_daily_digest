@@ -1,9 +1,10 @@
 # intelligence — Person B
 
 Owns: fact retrieval/comparison state (`facts.py`), subject resolution,
-fact extraction, deterministic claim drafting, citation validation, the
-evaluation harness (`evaluate.py`, self-check only — see its own
-docstring), and email rendering/sending (not yet built, delivery's job).
+fact extraction, deterministic claim drafting, citation validation, and the
+evaluation harness (`evaluate.py` — computes citation validity,
+unsupported claim count, duplicate rate, and change recall over frozen
+evaluation packs and digest runs).
 See `README.md` in this directory for the one-line upstream
 description, and `docs/API_CONTRACT.md` for the real shared contract —
 there is no "Entity" model; this module resolves to `Subject`
