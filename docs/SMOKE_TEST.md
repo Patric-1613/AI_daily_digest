@@ -19,6 +19,15 @@ those values out of the provider dashboards.
 Complete these steps only after Person A has entered the approved Render and Resend environment
 values and confirmed that the subscription routes are mounted:
 
+- [ ] Record the current delivery limitation before starting: no shipped service, repository,
+      or Resend-adapter path issues or emails an unsubscribe token. Confirmation can be tested;
+      unsubscribe is blocked unless a valid token has already been received through an approved
+      application delivery path. Do not invent, manually mint, or extract a token to bypass this
+      limitation, and leave issue #53 open while the step is blocked.
+- [ ] For this controlled smoke only, Person A may set `VITE_SUBSCRIPTIONS_ENABLED=true` in the
+      Render static-site environment and rebuild the deployed frontend. Keep the value unset or
+      false in Git. This temporary Render setting is required to mount the browser confirmation and
+      unsubscribe pages used below.
 - [ ] Submit one subscription request using the single approved team address.
 - [ ] Confirm that the generic subscribe response does not reveal whether the address already
       exists or expose a raw confirmation token.
@@ -34,8 +43,9 @@ values and confirmed that the subscription routes are mounted:
       campaign/RFC 8058 work to make the smoke pass.
 - [ ] Confirm that no email address, raw token, API key, provider payload, full confirmation URL,
       or database URL appears in application logs or recorded smoke-test evidence.
-- [ ] Set `VITE_SUBSCRIPTIONS_ENABLED=true` in Render only after the complete subscribe, confirm,
-      and unsubscribe smoke test passes; do not commit the flag as enabled in Git.
+- [ ] If the complete subscribe, confirm, and unsubscribe lifecycle cannot pass, Person A turns
+      `VITE_SUBSCRIPTIONS_ENABLED` back off in Render and rebuilds the static site. Leave it enabled
+      only after the full lifecycle succeeds; never commit the flag as enabled in Git.
 
 ## Ownership and evidence
 
