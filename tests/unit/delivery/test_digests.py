@@ -10,11 +10,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import HttpUrl, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_daily_digest.delivery.api.app import create_app
 from ai_daily_digest.delivery.api.errors import ErrorEnvelope
 from ai_daily_digest.delivery.api.schemas import (
+    DigestCitationDetail,
     DigestDetail,
     DigestSummary,
 )
@@ -205,7 +207,7 @@ def test_get_digest_detail_returns_published_digest_with_grounded_claims() -> No
     claim_id = new_id()
     citation = DigestCitation(
         snapshot_id=snap_id,
-        canonical_url="https://anthropic.com/news/claude-2-1",
+        canonical_url=cast(HttpUrl, "https://anthropic.com/news/claude-2-1"),
         source_title="Claude 2.1 Announcement",
     )
     claim = DigestClaim(
@@ -249,10 +251,14 @@ def test_get_digest_detail_returns_published_digest_with_grounded_claims() -> No
 def test_get_digest_detail_supports_multiple_claims_and_citations_in_order() -> None:
     s1, s2 = new_id(), new_id()
     cit1 = DigestCitation(
-        snapshot_id=s1, canonical_url="https://example.com/1", source_title="Source 1"
+        snapshot_id=s1,
+        canonical_url=cast(HttpUrl, "https://example.com/1"),
+        source_title="Source 1",
     )
     cit2 = DigestCitation(
-        snapshot_id=s2, canonical_url="https://example.com/2", source_title="Source 2"
+        snapshot_id=s2,
+        canonical_url=cast(HttpUrl, "https://example.com/2"),
+        source_title="Source 2",
     )
     c1 = DigestClaim(
         id=new_id(),
@@ -343,7 +349,7 @@ def test_get_digest_detail_review_digest_returns_404_fail_closed() -> None:
                 citations=[
                     DigestCitation(
                         snapshot_id=new_id(),
-                        canonical_url="https://example.com",
+                        canonical_url=cast(HttpUrl, "https://example.com"),
                         source_title="Source",
                     )
                 ],
@@ -389,7 +395,9 @@ def test_get_digest_detail_fails_closed_if_published_digest_has_unsupported_clai
         citation_snapshot_ids=[new_id()],
         citations=[
             DigestCitation(
-                snapshot_id=new_id(), canonical_url="https://example.com", source_title="Source"
+                snapshot_id=new_id(),
+                canonical_url=cast(HttpUrl, "https://example.com"),
+                source_title="Source",
             )
         ],
         validation_status=ClaimValidationStatus.UNSUPPORTED,
@@ -409,3 +417,95 @@ def test_get_digest_detail_fails_closed_if_published_digest_has_unsupported_clai
     error = ErrorEnvelope.model_validate(response.json()).error
     assert error.code == "internal_error"
     assert "unsupported status" not in response.text
+
+
+def test_digest_citation_detail_rejects_unsafe_javascript_and_data_schemes() -> None:
+    snap_id = new_id()
+
+    # javascript: scheme is rejected at the schema boundary
+    with pytest.raises(ValidationError):
+        DigestCitationDetail(
+            snapshot_id=snap_id,
+            canonical_url=cast(HttpUrl, "javascript:alert(1)"),
+            source_title="Malicious Link",
+        )
+
+    # data: scheme is rejected
+    with pytest.raises(ValidationError):
+        DigestCitationDetail(
+            snapshot_id=snap_id,
+            canonical_url=cast(HttpUrl, "data:text/html,<script>alert(1)</script>"),
+            source_title="Data Link",
+        )
+
+    # empty string URL is rejected
+    with pytest.raises(ValidationError):
+        DigestCitationDetail(
+            snapshot_id=snap_id,
+            canonical_url=cast(HttpUrl, ""),
+            source_title="Empty URL Link",
+        )
+
+    # Same validation strictly applies to shared DigestCitation
+    with pytest.raises(ValidationError):
+        DigestCitation(
+            snapshot_id=snap_id,
+            canonical_url=cast(HttpUrl, "javascript:alert(1)"),
+            source_title="Malicious Link",
+        )
+
+
+def test_digest_citation_detail_rejects_empty_source_title() -> None:
+    snap_id = new_id()
+
+    # Empty source_title is rejected
+    with pytest.raises(ValidationError):
+        DigestCitationDetail(
+            snapshot_id=snap_id,
+            canonical_url=cast(HttpUrl, "https://example.com/source"),
+            source_title="",
+        )
+
+    # Empty source_title on shared DigestCitation is also rejected
+    with pytest.raises(ValidationError):
+        DigestCitation(
+            snapshot_id=snap_id,
+            canonical_url=cast(HttpUrl, "https://example.com/source"),
+            source_title="",
+        )
+
+
+def test_get_digest_detail_fails_closed_when_persisted_citation_has_malformed_url_or_empty_title() -> (
+    None
+):
+    # A published digest with a malformed/missing citation fails closed with 500
+    claim_id = new_id()
+    # Construct a raw ungrounded/malformed claim representation
+    claim = DigestClaim.model_construct(
+        id=claim_id,
+        text="Claim with corrupt citation",
+        citation_snapshot_ids=[new_id()],
+        citations=[
+            DigestCitation.model_construct(
+                snapshot_id=new_id(),
+                canonical_url="javascript:alert(1)",  # bypassed construct
+                source_title="Corrupt Link",
+            )
+        ],
+        validation_status=ClaimValidationStatus.SUPPORTED,
+    )
+    digest = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.PUBLISHED,
+        title="Corrupted citation digest",
+        claims=[claim],
+    )
+    client = _client([digest])
+
+    response = client.get(f"/v1/digests/{digest.id}")
+
+    assert response.status_code == 500
+    error = ErrorEnvelope.model_validate(response.json()).error
+    assert error.code == "internal_error"
+    assert "javascript:" not in response.text

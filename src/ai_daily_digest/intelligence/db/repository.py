@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -790,16 +791,26 @@ class PostgresFactStore:
             for row in cit_res.all():
                 claim_id = row[0]
                 snapshot_id = row[1]
-                canonical_url = str(row[2] or "")
-                source_title = str(row[3] or "")
+                canonical_url = str(row[2] or "").strip()
+                source_title = str(row[3] or "").strip()
                 citation_snapshot_ids_by_claim.setdefault(claim_id, []).append(snapshot_id)
-                citations_by_claim.setdefault(claim_id, []).append(
-                    DigestCitation(
+                try:
+                    # Fail-closed citation construction: DigestCitation requires a valid
+                    # HttpUrl and a non-empty source_title. If a stored snapshot has an invalid
+                    # or missing URL/title, DigestCitation construction raises ValidationError.
+                    # We omit the invalid citation from `citations_by_claim`. Downstream, the
+                    # route publication invariant gate enforces that every published claim must
+                    # have >=1 valid citation, failing closed with HTTP 500 rather than leaking
+                    # malformed metadata.
+                    citation = DigestCitation(
                         snapshot_id=snapshot_id,
-                        canonical_url=canonical_url,
+                        canonical_url=canonical_url,  # type: ignore[arg-type]
                         source_title=source_title,
                     )
-                )
+                    citations_by_claim.setdefault(claim_id, []).append(citation)
+                except (ValidationError, ValueError):
+                    # Stored citation failed validation; omitted from hydrated domain model.
+                    pass
 
         digests: list[Digest] = []
         for d in digest_rows:

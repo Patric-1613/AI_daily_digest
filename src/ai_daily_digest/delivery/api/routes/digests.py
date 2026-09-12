@@ -7,6 +7,7 @@ from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from pydantic import ValidationError
 
 from ai_daily_digest.delivery.api.dependencies import get_cursor_codec, get_digest_feed_repository
 from ai_daily_digest.delivery.api.errors import ErrorEnvelope, error_response
@@ -167,14 +168,22 @@ async def get_digest_detail(
                 code="internal_error",
                 message="An unexpected error occurred.",
             )
-        citations = [
-            DigestCitationDetail(
-                snapshot_id=cit.snapshot_id,
-                canonical_url=cit.canonical_url,
-                source_title=cit.source_title,
+        try:
+            citations = [
+                DigestCitationDetail(
+                    snapshot_id=cit.snapshot_id,
+                    canonical_url=cit.canonical_url,
+                    source_title=cit.source_title,
+                )
+                for cit in c.citations
+            ]
+        except (ValidationError, ValueError):
+            return error_response(
+                request,
+                status_code=500,
+                code="internal_error",
+                message="An unexpected error occurred.",
             )
-            for cit in c.citations
-        ]
         claims.append(
             DigestClaimDetail(
                 id=c.id,

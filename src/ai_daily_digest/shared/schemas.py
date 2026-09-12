@@ -518,8 +518,8 @@ class DigestCitation(BaseModel):
     """A citation linking a claim to an immutable snapshot and its source metadata."""
 
     snapshot_id: Uuid7Id
-    canonical_url: str
-    source_title: str
+    canonical_url: HttpUrl
+    source_title: str = Field(min_length=1)
 
 
 class DigestClaim(BaseModel):

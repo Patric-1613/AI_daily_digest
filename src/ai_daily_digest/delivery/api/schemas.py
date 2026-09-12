@@ -24,8 +24,8 @@ class DigestCitationDetail(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     snapshot_id: Uuid7Id
-    canonical_url: HttpUrl | str
-    source_title: str
+    canonical_url: HttpUrl
+    source_title: str = Field(min_length=1)
 
 
 class DigestClaimDetail(BaseModel):
