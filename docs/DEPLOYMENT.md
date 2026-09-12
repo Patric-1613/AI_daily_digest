@@ -138,16 +138,27 @@ Outside a verified Render web service (local development, tests, or any other su
 deployment target), the existing direct ASGI connection peer (`request.client`) is used exactly as
 before this mechanism existed. Application code still never parses `Forwarded` itself.
 
-Person A completes activation under issue #53:
+Person A completes activation under issue #53, in this exact order (matching
+[`SMOKE_TEST.md`](SMOKE_TEST.md)):
 
 1. Enter the complete application-specific set in Render. Secret values stay in Render;
    `.env.example` remains empty. There is no proxy CIDR to obtain or configure.
-2. Deploy the API while `VITE_SUBSCRIPTIONS_ENABLED` remains false or unset.
-3. Follow [`SMOKE_TEST.md`](SMOKE_TEST.md) with one approved team address to verify request,
-   confirmation, confirmation replay, and unsubscribe without copying the address, token, key, or
-   full URL into an issue or log.
-4. Only after that API smoke passes, set the public frontend build flag in Render and rebuild the
-   static site. The flag remains false or unset in Git.
+2. Let Render deploy the API with that environment (entering the values triggers the restart).
+3. Verify health, readiness, `/openapi.json`, and that the three subscription routes are mounted,
+   while `VITE_SUBSCRIPTIONS_ENABLED` still remains false or unset — this confirms the API side is
+   ready without exposing anything publicly yet.
+4. Only then set `VITE_SUBSCRIPTIONS_ENABLED=true` on the Render static site and rebuild it. This
+   is a temporary Render environment change only; the flag remains false or unset in Git. The
+   confirmation and unsubscribe pages are not mounted, and the full lifecycle cannot be exercised
+   through the deployed frontend, until this step has run.
+5. With one approved team address, run the complete browser lifecycle end to end: subscribe,
+   receive the confirmation email, open and complete the confirmation page/action, receive the
+   unsubscribe email, open and complete the unsubscribe page/action, then replay the unsubscribe
+   link and confirm the idempotent result — without copying the address, token, key, or full URL
+   into an issue or log.
+6. If any step in that lifecycle fails, immediately set `VITE_SUBSCRIPTIONS_ENABLED=false` (or
+   remove it) in Render and rebuild the static site before doing anything else.
+7. Leave the flag enabled in Render only after the complete lifecycle in step 5 passes.
 
 RFC 8058 one-click unsubscribe remains disabled and absent from this activation. Campaign email,
 provider webhooks, and live sends beyond the controlled team-address smoke test remain out of
