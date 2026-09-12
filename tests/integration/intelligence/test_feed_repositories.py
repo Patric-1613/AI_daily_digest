@@ -431,3 +431,65 @@ async def test_list_digests_date_filtering(database_session: AsyncSession) -> No
     to_digests = await repo.list_digests(feed_filter=DigestFeedFilter(date_to=date(2026, 9, 11)))
     assert len(to_digests) == 1
     assert to_digests[0].id == d1_id
+
+
+@pytest.mark.asyncio
+async def test_get_published_digest_database_behavior(
+    database_session: AsyncSession,
+) -> None:
+    """Test get_published_digest returns published digest with claims and citations, and None for draft/review/missing."""
+    _, snap_id = await _create_snapshot(database_session)
+
+    # 1. Published digest with claims and citations
+    pub_id = new_id()
+    await _create_published_digest(
+        database_session,
+        digest_id=pub_id,
+        digest_date=date(2026, 9, 12),
+        title="Published Digest",
+        snapshot_id=snap_id,
+    )
+
+    # 2. Draft digest
+    draft_id = new_id()
+    draft = DigestModel(
+        id=draft_id,
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.DRAFT.value,
+        title="Draft Digest",
+        created_at=BASE_TIME,
+    )
+
+    # 3. Review digest
+    review_id = new_id()
+    review = DigestModel(
+        id=review_id,
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.REVIEW.value,
+        title="Review Digest",
+        created_at=BASE_TIME,
+    )
+    database_session.add_all([draft, review])
+    await database_session.flush()
+
+    repo = PostgresDigestFeedRepository(database_session)
+
+    # Published digest is retrieved with claims and citations
+    retrieved = await repo.get_published_digest(pub_id)
+    assert retrieved is not None
+    assert retrieved.id == pub_id
+    assert retrieved.status == DigestStatus.PUBLISHED
+    assert retrieved.title == "Published Digest"
+    assert len(retrieved.claims) == 1
+    assert retrieved.claims[0].text == "Claim for Published Digest"
+    assert retrieved.claims[0].citation_snapshot_ids == [snap_id]
+    assert retrieved.claims[0].validation_status == ClaimValidationStatus.SUPPORTED
+
+    # Draft digest returns None
+    assert await repo.get_published_digest(draft_id) is None
+
+    # Review digest returns None
+    assert await repo.get_published_digest(review_id) is None
+
+    # Non-existent digest returns None
+    assert await repo.get_published_digest(new_id()) is None

@@ -815,6 +815,23 @@ class PostgresFactStore:
         hydrated = await self._hydrate_digests([row])
         return hydrated[0] if hydrated else None
 
+    async def get_published_digest(self, digest_id: uuid.UUID) -> Digest | None:
+        """Fetch a single published digest by its ID with claims and citations loaded.
+
+        IMPORTANT: Only digests with status='published' are returned. If the digest
+        does not exist or is in 'draft'/'review' status, None is returned.
+        """
+        stmt = select(DigestModel).where(
+            DigestModel.id == digest_id,
+            DigestModel.status == DigestStatus.PUBLISHED.value,
+        )
+        res = await self._session.execute(stmt)
+        row = res.scalar_one_or_none()
+        if row is None:
+            return None
+        hydrated = await self._hydrate_digests([row])
+        return hydrated[0] if hydrated else None
+
     async def get_latest_published_digest(self) -> Digest | None:
         """Retrieve the most recently published digest by (digest_date DESC, id DESC)."""
         stmt = (

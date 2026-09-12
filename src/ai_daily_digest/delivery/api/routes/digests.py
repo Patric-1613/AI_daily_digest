@@ -23,7 +23,7 @@ from ai_daily_digest.delivery.api.pagination import (
     canonicalize_filters,
     validate_half_open_range,
 )
-from ai_daily_digest.delivery.api.schemas import DigestSummary
+from ai_daily_digest.delivery.api.schemas import DigestClaimDetail, DigestDetail, DigestSummary
 from ai_daily_digest.shared.repositories import DigestFeedFilter, DigestFeedRepository
 from ai_daily_digest.shared.schemas import DigestStatus
 
@@ -119,3 +119,50 @@ async def get_digests(  # pylint: disable=too-many-arguments,too-many-positional
         for item in returned_items
     ]
     return Page[DigestSummary](items=summaries, next_cursor=next_cursor)
+
+
+@router.get(
+    "/digests/{digest_id}",
+    summary="Get published digest detail",
+    operation_id="get_digest_detail",
+    response_model=DigestDetail,
+    responses={
+        200: {"description": "The requested published digest detail."},
+        404: {"model": ErrorEnvelope, "description": "Digest not found or not published."},
+        422: {"model": ErrorEnvelope, "description": "Invalid digest ID format."},
+    },
+)
+async def get_digest_detail(
+    request: Request,
+    digest_id: uuid.UUID,
+    repository: Annotated[DigestFeedRepository, Depends(get_digest_feed_repository)],
+) -> Response | DigestDetail:
+    """Return published digest detail by ID with claims and citations.
+
+    If the digest does not exist or is not in published status, returns HTTP 404.
+    """
+    digest = await repository.get_published_digest(digest_id)
+    if digest is None or digest.status is not DigestStatus.PUBLISHED:
+        return error_response(
+            request,
+            status_code=404,
+            code="digest_not_found",
+            message="The requested digest was not found.",
+        )
+
+    claims = [
+        DigestClaimDetail(
+            id=c.id,
+            text=c.text,
+            citation_snapshot_ids=c.citation_snapshot_ids,
+            validation_status=c.validation_status,
+        )
+        for c in digest.claims
+    ]
+    return DigestDetail(
+        id=digest.id,
+        digest_date=digest.digest_date,
+        status=digest.status,
+        title=digest.title,
+        claims=claims,
+    )

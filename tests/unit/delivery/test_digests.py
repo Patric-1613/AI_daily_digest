@@ -14,10 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ai_daily_digest.delivery.api.app import create_app
 from ai_daily_digest.delivery.api.errors import ErrorEnvelope
-from ai_daily_digest.delivery.api.schemas import DigestSummary
+from ai_daily_digest.delivery.api.schemas import (
+    DigestDetail,
+    DigestSummary,
+)
 from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.repositories import DigestFeedFilter, DigestFeedRepository
-from ai_daily_digest.shared.schemas import Digest, DigestStatus
+from ai_daily_digest.shared.schemas import (
+    ClaimValidationStatus,
+    Digest,
+    DigestClaim,
+    DigestStatus,
+)
 
 TEST_KEY = b"\x2a" * 32
 
@@ -45,6 +53,12 @@ class InMemoryDigestFeedRepository:
         if after is not None:
             ordered = [item for item in ordered if (item.digest_date, item.id) < after]
         return ordered[: limit + 1]
+
+    async def get_published_digest(self, digest_id: uuid.UUID) -> Digest | None:
+        for item in self._items:
+            if item.id == digest_id and item.status is DigestStatus.PUBLISHED:
+                return item
+        return None
 
 
 def _digest(day: int, *, title: str | None = None) -> Digest:
@@ -183,3 +197,145 @@ def test_digest_repository_configuration_fails_closed() -> None:
             database_session_factory=cast(async_sessionmaker[AsyncSession], object()),
             digest_feed_repository_factory=lambda _: repository,
         )
+
+
+def test_get_digest_detail_returns_published_digest_with_grounded_claims() -> None:
+    snap_id = new_id()
+    claim_id = new_id()
+    claim = DigestClaim(
+        id=claim_id,
+        text="Claude 2.1 now supports 200k tokens context window.",
+        citation_snapshot_ids=[snap_id],
+        validation_status=ClaimValidationStatus.SUPPORTED,
+    )
+    digest = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.PUBLISHED,
+        title="AI Daily Digest — 12 September 2026",
+        claims=[claim],
+    )
+    client = _client([digest])
+
+    response = client.get(f"/v1/digests/{digest.id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    validated = DigestDetail.model_validate(data)
+    assert validated.id == digest.id
+    assert validated.digest_date == date(2026, 9, 12)
+    assert validated.status == DigestStatus.PUBLISHED
+    assert validated.title == "AI Daily Digest — 12 September 2026"
+    assert len(validated.claims) == 1
+    assert validated.claims[0].id == claim_id
+    assert validated.claims[0].text == "Claude 2.1 now supports 200k tokens context window."
+    assert validated.claims[0].citation_snapshot_ids == [snap_id]
+    assert validated.claims[0].validation_status == ClaimValidationStatus.SUPPORTED
+
+
+def test_get_digest_detail_supports_multiple_claims_and_citations_in_order() -> None:
+    s1, s2 = new_id(), new_id()
+    c1 = DigestClaim(
+        id=new_id(),
+        text="First change claim.",
+        citation_snapshot_ids=[s1],
+        validation_status=ClaimValidationStatus.SUPPORTED,
+    )
+    c2 = DigestClaim(
+        id=new_id(),
+        text="Second change claim.",
+        citation_snapshot_ids=[s1, s2],
+        validation_status=ClaimValidationStatus.SUPPORTED,
+    )
+    digest = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.PUBLISHED,
+        title="Multi-claim digest",
+        claims=[c1, c2],
+    )
+    client = _client([digest])
+
+    response = client.get(f"/v1/digests/{digest.id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert [c["id"] for c in data["claims"]] == [str(c1.id), str(c2.id)]
+    assert data["claims"][1]["citation_snapshot_ids"] == [str(s1), str(s2)]
+
+
+def test_get_digest_detail_empty_published_digest_returns_empty_claims() -> None:
+    digest = _digest(10, title="Empty published digest")
+    client = _client([digest])
+
+    response = client.get(f"/v1/digests/{digest.id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == str(digest.id)
+    assert data["claims"] == []
+
+
+def test_get_digest_detail_missing_id_returns_safe_404() -> None:
+    client = _client([])
+    missing_id = new_id()
+
+    response = client.get(f"/v1/digests/{missing_id}")
+
+    assert response.status_code == 404
+    error = ErrorEnvelope.model_validate(response.json()).error
+    assert error.code == "digest_not_found"
+    assert error.message == "The requested digest was not found."
+
+
+def test_get_digest_detail_draft_digest_returns_404_fail_closed() -> None:
+    draft = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.DRAFT,
+        title="Unpublished draft",
+        claims=[],
+    )
+    client = _client([draft])
+
+    response = client.get(f"/v1/digests/{draft.id}")
+
+    assert response.status_code == 404
+    error = ErrorEnvelope.model_validate(response.json()).error
+    assert error.code == "digest_not_found"
+    assert "Unpublished draft" not in response.text
+
+
+def test_get_digest_detail_review_digest_returns_404_fail_closed() -> None:
+    review = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.REVIEW,
+        title="Review required digest",
+        claims=[
+            DigestClaim(
+                id=new_id(),
+                text="Unvalidated claim",
+                citation_snapshot_ids=[new_id()],
+                validation_status=ClaimValidationStatus.UNSUPPORTED,
+            )
+        ],
+    )
+    client = _client([review])
+
+    response = client.get(f"/v1/digests/{review.id}")
+
+    assert response.status_code == 404
+    error = ErrorEnvelope.model_validate(response.json()).error
+    assert error.code == "digest_not_found"
+    assert "Unvalidated claim" not in response.text
+
+
+def test_get_digest_detail_invalid_uuid_returns_422() -> None:
+    client = _client([])
+
+    response = client.get("/v1/digests/not-a-uuid")
+
+    assert response.status_code == 422
+    error = ErrorEnvelope.model_validate(response.json()).error
+    assert error.code == "validation_error"

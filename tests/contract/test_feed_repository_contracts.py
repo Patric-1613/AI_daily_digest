@@ -65,6 +65,10 @@ def test_digest_feed_repository_protocol_conformance() -> None:
     assert "after" in params
     assert "limit" in params
 
+    sig_detail = inspect.signature(DigestFeedRepository.get_published_digest)
+    params_detail = list(sig_detail.parameters.keys())
+    assert "digest_id" in params_detail
+
 
 def test_feed_filters_are_frozen_dataclasses() -> None:
     """Feed filters must be frozen dataclasses per ADR 0008."""

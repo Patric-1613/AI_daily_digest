@@ -412,7 +412,17 @@ and `title`. Claims and citations are reserved for the later detail endpoint.
 }
 ```
 
-The later detail response will use a wrapper rather than returning an unowned claim array:
+## Digest detail endpoint contract (`GET /v1/digests/{digest_id}`)
+
+Returns the full details and grounded claims for a specific published digest.
+
+### Path parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `digest_id` | UUID v7 string | Unique identifier of the published digest. |
+
+### Response schema (`DigestDetail`)
 
 ```json
 {
@@ -424,12 +434,20 @@ The later detail response will use a wrapper rather than returning an unowned cl
     {
       "id": "01a034ed-e100-74d1-8508-247704ced117",
       "text": "Example Model now supports a 256k-token context window.",
-      "citation_snapshot_ids": ["01a032cd-23e0-76d3-a27c-f608ccc02226"],
+      "citation_snapshot_ids": [
+        "01a032cd-23e0-76d3-a27c-f608ccc02226"
+      ],
       "validation_status": "supported"
     }
   ]
 }
 ```
+
+### Safety and privacy constraints
+
+- **Published-only public gate**: If the requested `digest_id` does not exist or its status is not `published` (e.g. `draft` or `review`), the server returns HTTP 404 with error code `digest_not_found` and message `"The requested digest was not found."`
+- **Zero internal prompt leakage**: Responses never include internal prompts, embeddings, or subscription secrets.
+- **Traceable evidence**: Each claim includes its `citation_snapshot_ids` resolving to stored document snapshots.
 
 `digest_date` is a real calendar date, serialized as `YYYY-MM-DD` on the wire. An impossible
 value (for example `"2026-13-40"`) is rejected at the model boundary rather than stored as an
