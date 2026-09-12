@@ -6,11 +6,12 @@ set -eu
 # service never accepts traffic on an unmigrated schema.
 .venv/bin/alembic upgrade head
 # Render automatically supplies a FORWARDED_ALLOW_IPS environment variable to every Python
-# service (observed value: "*"), independent of any value an operator configures for
-# subscriptions. delivery/api/config.py's _subscription_production() deliberately never treats
-# FORWARDED_ALLOW_IPS's mere presence as a signal that subscription configuration has started --
-# only an application-specific subscription/email setting may do that -- so this default value
-# alone can never activate subscriptions or block startup (issue #131).
+# service (observed value: "*") and does not publish a stable reverse-proxy CIDR an operator
+# could supply instead, so this flag's value is passed through as-is and is no longer part of
+# subscription production configuration (delivery/api/config.py's _subscription_production() does
+# not read it at all -- issue #136). The subscription rate-limit network identity is instead
+# resolved from Cloudflare's CF-Connecting-IP header on a verified Render web-service runtime; see
+# ai_daily_digest.delivery.api.client_network.
 exec .venv/bin/uvicorn ai_daily_digest.delivery.api.production:create_production_app \
   --factory --host 0.0.0.0 --port "${PORT}" \
   --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-}"

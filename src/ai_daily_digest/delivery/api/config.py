@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,12 +17,14 @@ from ai_daily_digest.delivery.subscriptions.tokens import SubscriptionTokenEnvir
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
-_MAX_TRUSTED_PROXY_ENTRIES = 16
-# Application-specific settings only. Render supplies FORWARDED_ALLOW_IPS to every Python
-# service by default (see scripts/start_render.sh), so its mere presence must never by itself
-# signal that an operator has started configuring subscriptions -- only one of these
-# application-specific values may do that. See _subscription_production() below.
-_SUBSCRIPTION_ACTIVATION_SETTING_NAMES = (
+# Application-specific settings only. Render automatically injects FORWARDED_ALLOW_IPS=* into
+# every Python service and does not publish a stable reverse-proxy CIDR an operator could supply
+# instead, so this set intentionally excludes it: the subscription rate-limit network identity no
+# longer depends on Uvicorn's proxy-trust mechanism (see
+# ai_daily_digest.delivery.api.client_network). Presence of any one of these application-specific
+# values is what signals that an operator has started configuring subscriptions, and once any one
+# is present, every other one is required.
+_SUBSCRIPTION_SETTING_NAMES = (
     "SUBSCRIPTION_TOKEN_ENVIRONMENT",
     "SUBSCRIPTION_CONFIRM_KEY_ID",
     "SUBSCRIPTION_CONFIRM_KEY",
@@ -33,9 +34,6 @@ _SUBSCRIPTION_ACTIVATION_SETTING_NAMES = (
     "EMAIL_PROVIDER_API_KEY",
     "EMAIL_FROM_ADDRESS",
 )
-# The complete set required once subscriptions are activated: every activation setting above,
-# plus the trusted-proxy allowlist.
-_SUBSCRIPTION_SETTING_NAMES = (*_SUBSCRIPTION_ACTIVATION_SETTING_NAMES, "FORWARDED_ALLOW_IPS")
 
 
 def _parse_boolean(*, name: str, value: str) -> bool:
@@ -83,7 +81,6 @@ class SubscriptionProductionSettings:
 
     security: SubscriptionSecuritySettings = field(repr=False)
     confirmation_delivery: ResendConfirmationSettings = field(repr=False)
-    forwarded_allow_ips: str = field(repr=False)
 
 
 def _subscription_security(values: Mapping[str, str]) -> SubscriptionSecuritySettings | None:
@@ -121,56 +118,11 @@ def _subscription_security(values: Mapping[str, str]) -> SubscriptionSecuritySet
     )
 
 
-def _trusted_proxy_allowlist(value: str) -> str:
-    raw_entries = value.strip().split(",")
-    if (
-        not value.strip()
-        or len(raw_entries) > _MAX_TRUSTED_PROXY_ENTRIES
-        or any(not entry.strip() for entry in raw_entries)
-    ):
-        raise ValueError("FORWARDED_ALLOW_IPS must be a bounded IP/CIDR allowlist")
-
-    canonical_entries: list[str] = []
-    for raw_entry in raw_entries:
-        entry = raw_entry.strip()
-        if entry == "*":
-            raise ValueError("FORWARDED_ALLOW_IPS cannot trust every proxy")
-        if "/" in entry:
-            try:
-                # Uvicorn's ProxyHeadersMiddleware parses networks with
-                # ``strict=True``. Match that boundary so a value accepted by
-                # application configuration cannot silently become an
-                # untrusted literal when the raw environment value reaches
-                # Uvicorn's ``--forwarded-allow-ips`` option.
-                network = ipaddress.ip_network(entry, strict=True)
-            except ValueError:
-                raise ValueError("FORWARDED_ALLOW_IPS contains an invalid IP or CIDR") from None
-            if network.prefixlen == 0:
-                raise ValueError("FORWARDED_ALLOW_IPS cannot contain an unbounded network")
-            canonical = str(network)
-        else:
-            try:
-                address = ipaddress.ip_address(entry)
-            except ValueError:
-                raise ValueError("FORWARDED_ALLOW_IPS contains an invalid IP or CIDR") from None
-            if address.is_unspecified:
-                raise ValueError("FORWARDED_ALLOW_IPS cannot contain an unspecified address")
-            canonical = str(address)
-        if canonical in canonical_entries:
-            raise ValueError("FORWARDED_ALLOW_IPS contains a duplicate entry")
-        canonical_entries.append(canonical)
-    return ",".join(canonical_entries)
-
-
 def _subscription_production(
     values: Mapping[str, str],
 ) -> SubscriptionProductionSettings | None:
     configured = {name: values.get(name, "").strip() for name in _SUBSCRIPTION_SETTING_NAMES}
-    activated = any(configured[name] for name in _SUBSCRIPTION_ACTIVATION_SETTING_NAMES)
-    if not activated:
-        # FORWARDED_ALLOW_IPS alone (Render's automatic default, e.g. "*") must never activate
-        # subscriptions: no application-specific setting is present, so routes stay disabled
-        # regardless of what value Render happens to have injected.
+    if not any(configured.values()):
         return None
     if any(not value for value in configured.values()):
         raise ValueError("subscription production configuration is incomplete")
@@ -185,7 +137,6 @@ def _subscription_production(
     return SubscriptionProductionSettings(
         security=security,
         confirmation_delivery=delivery,
-        forwarded_allow_ips=_trusted_proxy_allowlist(configured["FORWARDED_ALLOW_IPS"]),
     )
 
 

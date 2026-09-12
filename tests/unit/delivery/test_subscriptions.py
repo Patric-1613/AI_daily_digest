@@ -375,3 +375,56 @@ def test_subscription_payload_rejects_missing_consent_and_extra_fields() -> None
     assert missing_consent.json()["error"]["code"] == "validation_error"
     assert "must-not-be-accepted" not in extra_field.text
     service.request_subscription.assert_not_awaited()
+
+
+def test_subscription_request_uses_cf_connecting_ip_on_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("RENDER_SERVICE_TYPE", "web")
+    service = AsyncMock(spec=SubscriptionService)
+
+    response = _client(service).post(
+        "/v1/subscriptions",
+        json={"email": "reader@example.com", "consent_to_daily_digest": True},
+        headers={"CF-Connecting-IP": "198.51.100.7", "X-Forwarded-For": "1.2.3.4"},
+    )
+
+    assert response.status_code == 202
+    service.request_subscription.assert_awaited_once_with("reader@example.com", "198.51.100.7")
+
+
+def test_subscription_request_fails_closed_without_cf_connecting_ip_on_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("RENDER_SERVICE_TYPE", "web")
+    service = AsyncMock(spec=SubscriptionService)
+
+    response = _client(service).post(
+        "/v1/subscriptions",
+        json={"email": "reader@example.com", "consent_to_daily_digest": True},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "internal_error"
+    service.request_subscription.assert_not_awaited()
+    assert "reader@example.com" not in response.text
+
+
+def test_subscription_request_uses_direct_peer_when_not_on_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("RENDER_SERVICE_TYPE", raising=False)
+    service = AsyncMock(spec=SubscriptionService)
+
+    response = _client(service).post(
+        "/v1/subscriptions",
+        json={"email": "reader@example.com", "consent_to_daily_digest": True},
+        headers={"CF-Connecting-IP": "198.51.100.7"},
+    )
+
+    assert response.status_code == 202
+    awaited_network = service.request_subscription.await_args.args[1]
+    assert awaited_network != "198.51.100.7"
