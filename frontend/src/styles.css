@@ -92,6 +92,8 @@ input::placeholder { color: #77739b; }
 .digestClaims { display: grid; gap: 12px; padding: 0; margin: 24px 0 0; list-style: none; }
 .digestClaims > li { padding: 21px; border: 1px solid rgba(42, 38, 96, .86); border-radius: 13px; background: rgba(6, 5, 15, .42); }
 .digestClaims > li > p { margin: 12px 0 0; color: #e8e6f4; font-size: .92rem; line-height: 1.7; }
+.digestClaims > li > .claimChange { margin-top: 14px; padding: 10px 12px; border-left: 2px solid var(--violet); border-radius: 0 8px 8px 0; background: rgba(123, 92, 255, .08); color: #c8c4de; font-size: .76rem; }
+.claimChange strong { color: #e8e6f4; font-weight: 700; text-transform: capitalize; }
 .claimHeading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--cyan); font-size: .64rem; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
 .validationStatus { padding: 5px 8px; border: 1px solid rgba(123, 92, 255, .42); border-radius: 999px; color: #c8bdff; }
 .citationList { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 17px 0 0; list-style: none; }

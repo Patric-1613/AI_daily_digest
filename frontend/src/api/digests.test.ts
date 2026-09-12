@@ -20,6 +20,15 @@ const detail: DigestDetail = {
     id: "01a034ed-e100-74d1-8508-247704ced117",
     text: "Claude increased its context window from 100,000 to 200,000 tokens.",
     validation_status: "supported",
+    change: {
+      id: "01a034ed-e100-74d1-8508-247704ced118",
+      company: "Anthropic",
+      product: "Claude 3.5 Sonnet",
+      field: "context_window_tokens",
+      change_type: "increased",
+      previous_value: "100000",
+      current_value: "200000",
+    },
     citations: [{
       snapshot_id: "01a032cd-23e0-76d3-a27c-f608ccc02226",
       canonical_url: "https://www.anthropic.com/news/claude-2-1",
@@ -115,6 +124,42 @@ describe("digest detail API client", () => {
 
     expect(result).toEqual(detail);
     expect(requestedUrls).toEqual([`https://api.example.com/v1/digests/${digest.id}`]);
+  });
+
+  it.each([undefined, null])("accepts a missing optional change (%s)", async (change) => {
+    const payload = {
+      ...detail,
+      claims: [{ ...detail.claims[0], change }],
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
+
+    const result = await fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock as FetchDigests,
+    });
+
+    expect(result.claims[0]?.change).toBeNull();
+  });
+
+  it("rejects a malformed optional change", async () => {
+    const payload = {
+      ...detail,
+      claims: [{
+        ...detail.claims[0],
+        change: {
+          ...detail.claims[0]?.change,
+          previous_value: 100000,
+        },
+      }],
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
+
+    await expect(fetchDigestDetail({
+      apiBaseUrl: "https://api.example.com",
+      digestId: digest.id,
+      fetchImpl: fetchMock as FetchDigests,
+    })).rejects.toThrow(DigestsApiError);
   });
 
   it("rejects a javascript citation when filtering leaves no usable citation", async () => {
