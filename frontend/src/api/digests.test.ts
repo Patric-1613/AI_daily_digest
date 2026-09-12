@@ -20,7 +20,6 @@ const detail: DigestDetail = {
     id: "01a034ed-e100-74d1-8508-247704ced117",
     text: "Claude increased its context window from 100,000 to 200,000 tokens.",
     validation_status: "supported",
-    citation_snapshot_ids: ["01a032cd-23e0-76d3-a27c-f608ccc02226"],
     citations: [{
       snapshot_id: "01a032cd-23e0-76d3-a27c-f608ccc02226",
       canonical_url: "https://www.anthropic.com/news/claude-2-1",

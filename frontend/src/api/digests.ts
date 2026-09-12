@@ -18,7 +18,6 @@ export interface DigestClaim {
   id: string;
   text: string;
   validation_status: DigestClaimValidationStatus;
-  citation_snapshot_ids: string[];
   citations: DigestCitation[];
 }
 
@@ -72,12 +71,6 @@ function requiredString(record: Record<string, unknown>, key: string): string {
   return value;
 }
 
-function optionalStringArray(record: Record<string, unknown>, key: string): string[] {
-  const value = record[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
-}
-
 function safeHttpUrl(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0) return null;
   try {
@@ -128,7 +121,6 @@ function parseClaim(value: unknown): DigestClaim {
     id: requiredString(value, "id"),
     text: requiredString(value, "text"),
     validation_status: value.validation_status,
-    citation_snapshot_ids: optionalStringArray(value, "citation_snapshot_ids"),
     citations,
   };
 }

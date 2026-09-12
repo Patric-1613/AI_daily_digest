@@ -50,7 +50,6 @@ function digestDetail(digest: DigestSummary, claimText: string): DigestDetail {
       id: `${digest.id.slice(0, -1)}1`,
       text: claimText,
       validation_status: "supported",
-      citation_snapshot_ids: [],
       citations: [{
         snapshot_id: "01a032cd-23e0-76d3-a27c-f608ccc02226",
         canonical_url: "https://www.anthropic.com/news/claude-2-1",
