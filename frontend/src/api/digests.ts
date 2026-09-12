@@ -14,11 +14,22 @@ export interface DigestCitation {
   source_title: string;
 }
 
+export interface DigestClaimChange {
+  id: string;
+  company: string;
+  product: string;
+  field: string;
+  change_type: string;
+  previous_value: string | null;
+  current_value: string | null;
+}
+
 export interface DigestClaim {
   id: string;
   text: string;
   validation_status: DigestClaimValidationStatus;
   citations: DigestCitation[];
+  change?: DigestClaimChange | null;
 }
 
 export interface DigestDetail extends DigestSummary {
@@ -103,6 +114,30 @@ function parseCitation(value: unknown): DigestCitation | null {
   };
 }
 
+function nullableString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  if (value !== null && typeof value !== "string") {
+    throw new DigestsApiError("The digest service returned an invalid response.");
+  }
+  return value;
+}
+
+function parseOptionalChange(value: unknown): DigestClaimChange | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value)) {
+    throw new DigestsApiError("The digest service returned an invalid response.");
+  }
+  return {
+    id: requiredString(value, "id"),
+    company: requiredString(value, "company"),
+    product: requiredString(value, "product"),
+    field: requiredString(value, "field"),
+    change_type: requiredString(value, "change_type"),
+    previous_value: nullableString(value, "previous_value"),
+    current_value: nullableString(value, "current_value"),
+  };
+}
+
 function parseClaim(value: unknown): DigestClaim {
   if (!isRecord(value)) {
     throw new DigestsApiError("The digest service returned an invalid response.");
@@ -122,6 +157,7 @@ function parseClaim(value: unknown): DigestClaim {
     text: requiredString(value, "text"),
     validation_status: value.validation_status,
     citations,
+    change: parseOptionalChange(value.change),
   };
 }
 

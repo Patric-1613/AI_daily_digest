@@ -16,6 +16,15 @@ const detail: DigestDetail = {
     id: "01a034ed-e100-74d1-8508-247704ced117",
     text: "Claude increased its context window from 100,000 to 200,000 tokens.",
     validation_status: "supported",
+    change: {
+      id: "01a034ed-e100-74d1-8508-247704ced118",
+      company: "Anthropic",
+      product: "Claude 3.5 Sonnet",
+      field: "context_window_tokens",
+      change_type: "increased",
+      previous_value: "100000",
+      current_value: "200000",
+    },
     citations: [{
       snapshot_id: "01a032cd-23e0-76d3-a27c-f608ccc02226",
       canonical_url: "https://www.anthropic.com/news/claude-2-1",
@@ -144,6 +153,32 @@ describe("DigestFeed states", () => {
     expect(html).toContain('target="_blank"');
     expect(html).toContain('rel="noreferrer noopener"');
     expect(html).toContain('aria-label="Read official source: Introducing Claude 2.1"');
+    expect(html).toContain("context window tokens:");
+    expect(html).toContain("100000");
+    expect(html).toContain("200000");
+    expect(html).toContain("changed to");
+  });
+
+  it("omits the before-and-after line when a claim has no linked change", () => {
+    const unlinkedDetail = {
+      ...detail,
+      claims: [{ ...detail.claims[0]!, change: null }],
+    };
+    const html = renderToStaticMarkup(<DigestFeed
+      digests={[digest]}
+      initialLoading={false}
+      loadingMore={false}
+      error={null}
+      nextCursor={null}
+      selectedDigestId={digest.id}
+      detail={unlinkedDetail}
+      detailLoading={false}
+      detailError={null}
+      {...handlers}
+    />);
+
+    expect(html).not.toContain("claimChange");
+    expect(html).not.toContain("context window tokens:");
   });
 
 });

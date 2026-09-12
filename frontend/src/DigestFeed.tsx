@@ -29,6 +29,14 @@ function formatDigestDate(digestDate: string): string {
   return dateFormatter.format(new Date(`${digestDate}T00:00:00Z`));
 }
 
+function formatChangeField(field: string): string {
+  return field.replaceAll("_", " ");
+}
+
+function formatChangeValue(value: string | null, fallback: string): string {
+  return value ?? fallback;
+}
+
 export function DigestFeed({
   digests,
   initialLoading,
@@ -146,6 +154,15 @@ export function DigestFeed({
                               <span className="validationStatus">{claim.validation_status}</span>
                             </div>
                             <p>{claim.text}</p>
+                            {claim.change ? (
+                              <p className="claimChange">
+                                <strong>{formatChangeField(claim.change.field)}:</strong>{" "}
+                                {formatChangeValue(claim.change.previous_value, "No previous value")}{" "}
+                                <span aria-hidden="true">→</span>
+                                <span className="srOnly"> changed to </span>{" "}
+                                {formatChangeValue(claim.change.current_value, "No current value")}
+                              </p>
+                            ) : null}
                             <ul className="citationList" aria-label="Official sources">
                               {claim.citations.map((citation) => (
                                 <li key={`${claim.id}-${citation.snapshot_id}`}>
