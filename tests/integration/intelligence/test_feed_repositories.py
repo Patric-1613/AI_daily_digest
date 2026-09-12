@@ -438,7 +438,7 @@ async def test_get_published_digest_database_behavior(
     database_session: AsyncSession,
 ) -> None:
     """Test get_published_digest returns published digest with claims and citations, and None for draft/review/missing."""
-    _, snap_id = await _create_snapshot(database_session)
+    item_id, snap_id = await _create_snapshot(database_session)
 
     # 1. Published digest with claims and citations
     pub_id = new_id()
@@ -485,8 +485,11 @@ async def test_get_published_digest_database_behavior(
     assert retrieved.claims[0].citation_snapshot_ids == [snap_id]
     assert len(retrieved.claims[0].citations) == 1
     assert retrieved.claims[0].citations[0].snapshot_id == snap_id
-    assert retrieved.claims[0].citations[0].canonical_url == "https://example.com/item/1"
-    assert retrieved.claims[0].citations[0].source_title == "Source Item 1"
+    assert (
+        retrieved.claims[0].citations[0].canonical_url
+        == f"https://openai.example.com/news/{item_id}"
+    )
+    assert retrieved.claims[0].citations[0].source_title == "Sample Release"
     assert retrieved.claims[0].validation_status == ClaimValidationStatus.SUPPORTED
 
     # Draft digest returns None
