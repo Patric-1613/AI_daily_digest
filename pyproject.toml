@@ -142,6 +142,16 @@ collect-rss-batch = "ai_daily_digest.ingestion.rss.batch:main"
 collect-official-article = "ai_daily_digest.ingestion.article.run:main"
 # Intelligence production command for one daily digest generation run
 generate-digest = "ai_daily_digest.intelligence.run:main"
+# Combined production command (src/ai_daily_digest/daily_pipeline.py) for the
+# single daily Render cron: collects the verified RSS sources
+# (openai_news, langchain_pypi, langgraph_pypi) via the unmodified
+# `collect-rss-batch` core, then runs the unmodified intelligence pipeline
+# over exactly the window collection just created -- not
+# --previous-complete-utc-day, which would miss same-run snapshots. Exit
+# 0 = published / clean zero-change / healthy no-updates day,
+# 1 = partial collection or partial/review intelligence,
+# 2 = collection configuration/total failure or fatal intelligence failure.
+run-daily-digest = "ai_daily_digest.daily_pipeline:main"
 
 [dependency-groups]
 dev = [
