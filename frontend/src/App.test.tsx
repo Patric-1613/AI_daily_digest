@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App from "./App";
+import App, { getPeriodDateRange } from "./App";
 import type { DigestDetail, DigestSummary, FetchDigests } from "./api/digests";
 import type { FetchUpdates, UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
@@ -124,6 +124,7 @@ describe("AI Daily Digest shell", () => {
     expect(html).toContain("0 updates loaded");
     expect(html).toContain("Loading published digests");
     expect(html).toContain("Loading source updates");
+    expect(html).not.toContain("Cursor-paginated");
   });
 
   it("does not present non-functional controls or fabricated trust figures", () => {
@@ -314,5 +315,83 @@ describe("AI Daily Digest shell", () => {
     expect(container.textContent).not.toContain("Recovered claim");
     expect(buttonWithLabel(container, `View details for ${firstDigest.title}`)).toBeTruthy();
     await act(async () => root.unmount());
+  });
+
+  it("filters digests when period select changes", async () => {
+    const requestedDigestUrls: string[] = [];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") {
+        requestedDigestUrls.push(url.href);
+        return digestJsonResponse([firstDigest], null);
+      }
+      return jsonResponse([], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, firstDigest.title);
+
+    const periodSelect = container.querySelector<HTMLSelectElement>("#digest-period");
+    expect(periodSelect).toBeTruthy();
+
+    await act(async () => {
+      if (periodSelect) {
+        periodSelect.value = "week";
+        periodSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+
+    const lastDigestCall = requestedDigestUrls.at(-1) ?? "";
+    const parsedUrl = new URL(lastDigestCall);
+    expect(parsedUrl.searchParams.has("date_from")).toBe(true);
+
+    await act(async () => root.unmount());
+  });
+});
+
+describe("getPeriodDateRange helper", () => {
+  const fixedNow = new Date("2026-09-12T12:00:00Z");
+
+  it("returns null bounds for 'all'", () => {
+    expect(getPeriodDateRange("all", fixedNow)).toEqual({ date_from: null, date_to: null });
+  });
+
+  it("computes bounds for 'today'", () => {
+    expect(getPeriodDateRange("today", fixedNow)).toEqual({
+      date_from: "2026-09-12",
+      date_to: "2026-09-13",
+    });
+  });
+
+  it("computes bounds for 'yesterday'", () => {
+    expect(getPeriodDateRange("yesterday", fixedNow)).toEqual({
+      date_from: "2026-09-11",
+      date_to: "2026-09-12",
+    });
+  });
+
+  it("computes bounds for 'week'", () => {
+    expect(getPeriodDateRange("week", fixedNow)).toEqual({
+      date_from: "2026-09-05",
+      date_to: null,
+    });
+  });
+
+  it("computes bounds for 'month'", () => {
+    expect(getPeriodDateRange("month", fixedNow)).toEqual({
+      date_from: "2026-08-13",
+      date_to: null,
+    });
+  });
+
+  it("computes bounds for 'year'", () => {
+    expect(getPeriodDateRange("year", fixedNow)).toEqual({
+      date_from: "2025-09-12",
+      date_to: null,
+    });
   });
 });

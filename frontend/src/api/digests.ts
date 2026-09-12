@@ -59,6 +59,8 @@ export class DigestsApiError extends Error {
 interface FetchDigestsPageOptions {
   apiBaseUrl: string;
   cursor?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
   signal?: AbortSignal;
   fetchImpl?: FetchDigests;
 }
@@ -217,6 +219,8 @@ function isAbortError(error: unknown): boolean {
 export async function fetchDigestsPage({
   apiBaseUrl,
   cursor,
+  date_from,
+  date_to,
   signal,
   fetchImpl = fetch,
 }: FetchDigestsPageOptions): Promise<DigestsPage> {
@@ -230,6 +234,8 @@ export async function fetchDigestsPage({
 
   url.searchParams.set("limit", "6");
   if (cursor) url.searchParams.set("cursor", cursor);
+  if (date_from) url.searchParams.set("date_from", date_from);
+  if (date_to) url.searchParams.set("date_to", date_to);
 
   let response: Response;
   try {
