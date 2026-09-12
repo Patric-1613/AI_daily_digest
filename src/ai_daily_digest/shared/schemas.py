@@ -30,6 +30,7 @@ from pydantic import (
     Field,
     HttpUrl,
     TypeAdapter,
+    field_validator,
     model_validator,
 )
 
@@ -519,7 +520,14 @@ class DigestCitation(BaseModel):
 
     snapshot_id: Uuid7Id
     canonical_url: HttpUrl
-    source_title: str = Field(min_length=1)
+    source_title: str
+
+    @field_validator("source_title", mode="before")
+    @classmethod
+    def _validate_source_title(cls, v: object) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("source_title must be a non-empty string")
+        return v.strip()
 
 
 class DigestClaim(BaseModel):

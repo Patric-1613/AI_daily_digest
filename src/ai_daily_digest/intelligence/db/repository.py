@@ -8,7 +8,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -794,23 +793,16 @@ class PostgresFactStore:
                 canonical_url = str(row[2] or "").strip()
                 source_title = str(row[3] or "").strip()
                 citation_snapshot_ids_by_claim.setdefault(claim_id, []).append(snapshot_id)
-                try:
-                    # Fail-closed citation construction: DigestCitation requires a valid
-                    # HttpUrl and a non-empty source_title. If a stored snapshot has an invalid
-                    # or missing URL/title, DigestCitation construction raises ValidationError.
-                    # We omit the invalid citation from `citations_by_claim`. Downstream, the
-                    # route publication invariant gate enforces that every published claim must
-                    # have >=1 valid citation, failing closed with HTTP 500 rather than leaking
-                    # malformed metadata.
-                    citation = DigestCitation(
-                        snapshot_id=snapshot_id,
-                        canonical_url=canonical_url,  # type: ignore[arg-type]
-                        source_title=source_title,
-                    )
-                    citations_by_claim.setdefault(claim_id, []).append(citation)
-                except (ValidationError, ValueError):
-                    # Stored citation failed validation; omitted from hydrated domain model.
-                    pass
+                # Fail-closed citation construction: DigestCitation requires a valid
+                # HttpUrl and a non-empty, stripped source_title. Any invalid stored
+                # citation raises ValidationError, failing the published-detail read
+                # closed so that partial or corrupted evidence sets are never leaked.
+                citation = DigestCitation(
+                    snapshot_id=snapshot_id,
+                    canonical_url=canonical_url,  # type: ignore[arg-type]
+                    source_title=source_title,
+                )
+                citations_by_claim.setdefault(claim_id, []).append(citation)
 
         digests: list[Digest] = []
         for d in digest_rows:

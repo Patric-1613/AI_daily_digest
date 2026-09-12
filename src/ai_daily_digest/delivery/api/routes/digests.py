@@ -150,7 +150,15 @@ async def get_digest_detail(
     If the digest does not exist or is not in published status, returns HTTP 404.
     Fails closed with HTTP 500 if persisted digest violates supported-claim invariant.
     """
-    digest = await repository.get_published_digest(digest_id)
+    try:
+        digest = await repository.get_published_digest(digest_id)
+    except (ValidationError, ValueError):
+        return error_response(
+            request,
+            status_code=500,
+            code="internal_error",
+            message="An unexpected error occurred.",
+        )
     if digest is None or digest.status is not DigestStatus.PUBLISHED:
         return error_response(
             request,

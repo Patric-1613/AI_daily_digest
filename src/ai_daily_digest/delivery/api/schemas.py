@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from ai_daily_digest.shared.ids import Uuid7Id
 from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestStatus
@@ -25,7 +25,14 @@ class DigestCitationDetail(BaseModel):
 
     snapshot_id: Uuid7Id
     canonical_url: HttpUrl
-    source_title: str = Field(min_length=1)
+    source_title: str
+
+    @field_validator("source_title", mode="before")
+    @classmethod
+    def _validate_source_title(cls, v: object) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("source_title must be a non-empty string")
+        return v.strip()
 
 
 class DigestClaimDetail(BaseModel):

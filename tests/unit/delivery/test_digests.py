@@ -455,7 +455,7 @@ def test_digest_citation_detail_rejects_unsafe_javascript_and_data_schemes() -> 
         )
 
 
-def test_digest_citation_detail_rejects_empty_source_title() -> None:
+def test_digest_citation_detail_rejects_empty_or_whitespace_source_title() -> None:
     snap_id = new_id()
 
     # Empty source_title is rejected
@@ -466,12 +466,26 @@ def test_digest_citation_detail_rejects_empty_source_title() -> None:
             source_title="",
         )
 
-    # Empty source_title on shared DigestCitation is also rejected
+    # Whitespace-only source_title is stripped and rejected
+    with pytest.raises(ValidationError):
+        DigestCitationDetail(
+            snapshot_id=snap_id,
+            canonical_url=cast(HttpUrl, "https://example.com/source"),
+            source_title="   \t \n ",
+        )
+
+    # Empty / whitespace-only source_title on shared DigestCitation is also rejected
     with pytest.raises(ValidationError):
         DigestCitation(
             snapshot_id=snap_id,
             canonical_url=cast(HttpUrl, "https://example.com/source"),
             source_title="",
+        )
+    with pytest.raises(ValidationError):
+        DigestCitation(
+            snapshot_id=snap_id,
+            canonical_url=cast(HttpUrl, "https://example.com/source"),
+            source_title="   \t \n ",
         )
 
 
@@ -508,4 +522,47 @@ def test_get_digest_detail_fails_closed_when_persisted_citation_has_malformed_ur
     assert response.status_code == 500
     error = ErrorEnvelope.model_validate(response.json()).error
     assert error.code == "internal_error"
+    assert "javascript:" not in response.text
+
+
+def test_get_digest_detail_fails_closed_when_claim_has_mixed_valid_and_corrupt_citations() -> None:
+    # A published claim containing one valid citation and one corrupt citation must fail closed with
+    # 500 and not leak partial citations.
+    claim_id = new_id()
+    valid_snap_id = new_id()
+    corrupt_snap_id = new_id()
+    claim = DigestClaim.model_construct(
+        id=claim_id,
+        text="Claim with mixed valid and corrupt citations",
+        citation_snapshot_ids=[valid_snap_id, corrupt_snap_id],
+        citations=[
+            DigestCitation.model_construct(
+                snapshot_id=valid_snap_id,
+                canonical_url="https://anthropic.com/news/claude-3-5",
+                source_title="Valid Title",
+            ),
+            DigestCitation.model_construct(
+                snapshot_id=corrupt_snap_id,
+                canonical_url="javascript:alert(1)",
+                source_title="   ",  # whitespace title
+            ),
+        ],
+        validation_status=ClaimValidationStatus.SUPPORTED,
+    )
+    digest = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.PUBLISHED,
+        title="Mixed citation digest",
+        claims=[claim],
+    )
+    client = _client([digest])
+
+    response = client.get(f"/v1/digests/{digest.id}")
+
+    assert response.status_code == 500
+    error = ErrorEnvelope.model_validate(response.json()).error
+    assert error.code == "internal_error"
+    # Verify no partial response content or unsafe schema leaked
+    assert "Valid Title" not in response.text
     assert "javascript:" not in response.text
