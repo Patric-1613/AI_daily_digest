@@ -1,4 +1,4 @@
-"""Resend HTTPS adapter for transient subscription-confirmation delivery."""
+"""Resend HTTPS adapter for transient subscription lifecycle email delivery."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from ai_daily_digest.delivery.subscriptions.tokens import MAX_TOKEN_LENGTH
 
 RESEND_EMAILS_URL = "https://api.resend.com/emails"
 CONFIRMATION_PATH = "/subscriptions/confirm"
+UNSUBSCRIBE_PATH = "/subscriptions/unsubscribe"
 REQUEST_TIMEOUT_SECONDS = 5.0
 
 
@@ -57,6 +58,34 @@ class ConfirmationDeliveryConfigurationError(ConfirmationDeliveryError):
 
     def __init__(self) -> None:
         super().__init__("Confirmation delivery configuration is invalid.")
+
+
+@dataclass(frozen=True)
+class _DeliveryTemplate:
+    path: str
+    purpose: str
+    subject: str
+    introduction: str
+    action_label: str
+    closing: str
+
+
+_CONFIRMATION_TEMPLATE = _DeliveryTemplate(
+    path=CONFIRMATION_PATH,
+    purpose="confirmation",
+    subject="Confirm your AI Daily Digest subscription",
+    introduction="Confirm your AI Daily Digest subscription.",
+    action_label="Confirm subscription",
+    closing="If you did not request this, you can ignore this email.",
+)
+_UNSUBSCRIBE_TEMPLATE = _DeliveryTemplate(
+    path=UNSUBSCRIBE_PATH,
+    purpose="unsubscribe",
+    subject="Your AI Daily Digest unsubscribe link",
+    introduction="Your AI Daily Digest subscription is confirmed.",
+    action_label="Unsubscribe",
+    closing="Keep this email so you can unsubscribe at any time.",
+)
 
 
 @dataclass(frozen=True)
@@ -139,20 +168,20 @@ def _is_non_public_ip(hostname: str) -> bool:
     return not address.is_global
 
 
-def _confirmation_url(*, frontend_origin: str, token: str) -> str:
+def _subscription_action_url(*, frontend_origin: str, path: str, token: str) -> str:
     if not token or not token.isascii() or len(token) > MAX_TOKEN_LENGTH:
         raise ConfirmationDeliveryError()
     encoded_token = quote(token, safe="")
-    return f"{frontend_origin}{CONFIRMATION_PATH}#token={encoded_token}"
+    return f"{frontend_origin}{path}#token={encoded_token}"
 
 
-def _idempotency_key(token: str) -> str:
+def _idempotency_key(*, purpose: str, token: str) -> str:
     token_digest = hashlib.sha256(token.encode("ascii")).hexdigest()
-    return f"subscription-confirmation-{token_digest}"
+    return f"subscription-{purpose}-{token_digest}"
 
 
 class ResendConfirmationDelivery:
-    """Deliver confirmations through Resend without retaining sensitive inputs.
+    """Deliver subscription lifecycle links without retaining sensitive inputs.
 
     The caller owns the injected client lifecycle. This adapter deliberately
     performs one attempt only. Its stable, non-sensitive idempotency key lets a
@@ -170,6 +199,28 @@ class ResendConfirmationDelivery:
         self._client = client
 
     async def send_confirmation(self, *, address: str, token: str) -> None:
+        """Submit one bounded confirmation-email request."""
+        await self._send(
+            address=address,
+            token=token,
+            template=_CONFIRMATION_TEMPLATE,
+        )
+
+    async def send_unsubscribe(self, *, address: str, token: str) -> None:
+        """Submit one bounded unsubscribe-link email request after confirmation."""
+        await self._send(
+            address=address,
+            token=token,
+            template=_UNSUBSCRIBE_TEMPLATE,
+        )
+
+    async def _send(
+        self,
+        *,
+        address: str,
+        token: str,
+        template: _DeliveryTemplate,
+    ) -> None:
         """Submit one bounded HTTPS request and validate the provider result."""
         try:
             recipient = normalize_email(address)
@@ -178,29 +229,26 @@ class ResendConfirmationDelivery:
         if recipient != address:
             raise ConfirmationDeliveryError()
 
-        confirmation_url = _confirmation_url(
+        action_url = _subscription_action_url(
             frontend_origin=self._settings.frontend_origin,
+            path=template.path,
             token=token,
         )
-        safe_html_url = html.escape(confirmation_url, quote=True)
+        safe_html_url = html.escape(action_url, quote=True)
         request_body = {
             "from": self._settings.from_address,
             "to": [recipient],
-            "subject": "Confirm your AI Daily Digest subscription",
+            "subject": template.subject,
             "html": (
-                "<p>Confirm your AI Daily Digest subscription.</p>"
-                f'<p><a href="{safe_html_url}">Confirm subscription</a></p>'
-                "<p>If you did not request this, you can ignore this email.</p>"
+                f"<p>{html.escape(template.introduction)}</p>"
+                f'<p><a href="{safe_html_url}">{html.escape(template.action_label)}</a></p>'
+                f"<p>{html.escape(template.closing)}</p>"
             ),
-            "text": (
-                "Confirm your AI Daily Digest subscription:\n"
-                f"{confirmation_url}\n\n"
-                "If you did not request this, you can ignore this email."
-            ),
+            "text": f"{template.introduction}\n{action_url}\n\n{template.closing}",
         }
         headers = {
             "Authorization": f"Bearer {self._settings.api_key}",
-            "Idempotency-Key": _idempotency_key(token),
+            "Idempotency-Key": _idempotency_key(purpose=template.purpose, token=token),
         }
 
         try:

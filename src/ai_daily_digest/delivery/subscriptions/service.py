@@ -18,10 +18,13 @@ class SubscriptionRateLimitError(RuntimeError):
 
 
 class ConfirmationDelivery(Protocol):
-    """Transient boundary for delivering a newly issued confirmation capability."""
+    """Transient boundary for delivering subscription lifecycle capabilities."""
 
     async def send_confirmation(self, *, address: str, token: str) -> None:
         """Send one confirmation without retaining or logging its sensitive inputs."""
+
+    async def send_unsubscribe(self, *, address: str, token: str) -> None:
+        """Send one unsubscribe link without retaining or logging its sensitive inputs."""
 
 
 class SubscriptionService:
@@ -65,7 +68,13 @@ class SubscriptionService:
 
     async def confirm(self, token: str, network: str) -> None:
         await self._token_limit(network)
-        await self._repository.confirm(token)
+        result = await self._repository.confirm(token)
+        # confirm() commits the state transition and token digest before this
+        # provider-neutral I/O boundary. The raw capability remains transient.
+        await self._confirmation_delivery.send_unsubscribe(
+            address=result.address,
+            token=result.unsubscribe_token.token,
+        )
 
     async def unsubscribe(self, token: str, network: str) -> None:
         await self._token_limit(network)

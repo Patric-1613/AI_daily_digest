@@ -15,6 +15,7 @@ import pytest
 from ai_daily_digest.delivery.subscriptions.resend import (
     REQUEST_TIMEOUT_SECONDS,
     RESEND_EMAILS_URL,
+    UNSUBSCRIBE_PATH,
     ConfirmationDeliveryAuthenticationError,
     ConfirmationDeliveryConfigurationError,
     ConfirmationDeliveryError,
@@ -31,6 +32,7 @@ API_KEY = "test-provider-key-that-must-not-leak"
 FROM_ADDRESS = "digest@example.com"
 RECIPIENT = "Reader@example.com"
 TOKEN = "v1.test-confirm-1.confirm_subscription.secret-token.signature"
+UNSUBSCRIBE_TOKEN = "v1.test-unsubscribe-1.unsubscribe.secret-token.signature"
 FRONTEND_ORIGIN = "https://digest.example"
 
 
@@ -82,6 +84,45 @@ async def test_success_builds_expected_recipient_sender_template_and_fragment() 
     adapter, client = _adapter(handler)
     async with client:
         await adapter.send_confirmation(address=RECIPIENT, token=TOKEN)
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_success_builds_fragment_link_and_distinct_idempotency_key() -> None:
+    confirmation_key = ""
+    unsubscribe_key = ""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal confirmation_key, unsubscribe_key
+        body = json.loads(request.read())
+        if body["subject"] == "Confirm your AI Daily Digest subscription":
+            confirmation_key = request.headers["idempotency-key"]
+        else:
+            unsubscribe_key = request.headers["idempotency-key"]
+            assert body["from"] == FROM_ADDRESS
+            assert body["to"] == [RECIPIENT]
+            assert body["subject"] == "Your AI Daily Digest unsubscribe link"
+            expected_prefix = f"{FRONTEND_ORIGIN}{UNSUBSCRIBE_PATH}#token="
+            assert expected_prefix in body["html"]
+            assert expected_prefix in body["text"]
+            assert f"{UNSUBSCRIBE_PATH}?token=" not in body["html"]
+            assert request.extensions["timeout"] == {
+                "connect": REQUEST_TIMEOUT_SECONDS,
+                "read": REQUEST_TIMEOUT_SECONDS,
+                "write": REQUEST_TIMEOUT_SECONDS,
+                "pool": REQUEST_TIMEOUT_SECONDS,
+            }
+        return httpx.Response(200, json={"id": "provider-message-id"})
+
+    adapter, client = _adapter(handler)
+    async with client:
+        await adapter.send_confirmation(address=RECIPIENT, token=TOKEN)
+        await adapter.send_unsubscribe(address=RECIPIENT, token=UNSUBSCRIBE_TOKEN)
+
+    assert confirmation_key.startswith("subscription-confirmation-")
+    assert unsubscribe_key.startswith("subscription-unsubscribe-")
+    assert confirmation_key != unsubscribe_key
+    for sensitive_value in (RECIPIENT, TOKEN, UNSUBSCRIBE_TOKEN):
+        assert sensitive_value not in unsubscribe_key
 
 
 @pytest.mark.asyncio
@@ -213,6 +254,35 @@ async def test_failures_and_logs_do_not_expose_sensitive_values(
     )
     observable_text = f"{caplog.text}\n{captured.value!s}\n{captured.value!r}\n{rendered_exception}"
     for sensitive_value in (RECIPIENT, TOKEN, API_KEY, f"{FRONTEND_ORIGIN}/subscriptions/confirm"):
+        assert sensitive_value not in observable_text
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_provider_failure_is_safe_and_not_retried(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(503, text="provider detail must not escape")
+
+    caplog.set_level(logging.DEBUG)
+    adapter, client = _adapter(handler)
+    async with client:
+        with pytest.raises(ConfirmationDeliveryUnavailableError) as captured:
+            await adapter.send_unsubscribe(address=RECIPIENT, token=UNSUBSCRIBE_TOKEN)
+
+    assert request_count == 1
+    observable_text = f"{caplog.text}\n{captured.value!s}\n{captured.value!r}"
+    for sensitive_value in (
+        RECIPIENT,
+        UNSUBSCRIBE_TOKEN,
+        API_KEY,
+        f"{FRONTEND_ORIGIN}{UNSUBSCRIBE_PATH}",
+        "provider detail",
+    ):
         assert sensitive_value not in observable_text
 
 
