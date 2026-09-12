@@ -185,6 +185,25 @@ def test_production_factory_rejects_partial_subscription_configuration(
         create_production_app()
 
 
+def test_production_factory_starts_normally_with_only_renders_default_forwarded_allow_ips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: Render supplies FORWARDED_ALLOW_IPS to every Python service by default
+    (observed value: "*"). With no application-specific subscription/email setting configured,
+    the API must start normally and keep subscription routes disabled -- not crash with
+    "subscription production configuration is incomplete"."""
+    _configure_production(monkeypatch)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+
+    app = create_production_app()
+
+    paths = app.openapi()["paths"]
+    assert "/v1/subscriptions" not in paths
+    assert "/v1/subscriptions/confirm" not in paths
+    assert "/v1/subscriptions/unsubscribe" not in paths
+    assert app.state.subscription_service_factory is None
+
+
 def test_production_factory_wires_subscription_components_and_closes_http_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -101,8 +101,12 @@ disk), injects both `DATABASE_URL` values by reference, and commits no secret va
 
 ### Subscription production activation gate
 
-Subscription routes are disabled when every subscription-specific value is empty. They mount only
-when this complete set validates together:
+Subscription routes are disabled when every application-specific subscription/email value is
+empty. `FORWARDED_ALLOW_IPS` does not count toward that check on its own: Render automatically
+supplies this variable to every Python service (observed value: `*`), so its presence alone must
+never be read as "subscription configuration has started," or every deploy would fail startup
+even with subscriptions intentionally left disabled (issue #131). Routes mount only when at least
+one application-specific setting is present **and** this complete set validates together:
 
 - `SUBSCRIPTION_TOKEN_ENVIRONMENT`;
 - `SUBSCRIPTION_CONFIRM_KEY_ID` and `SUBSCRIPTION_CONFIRM_KEY`;
