@@ -139,6 +139,19 @@ class DigestFeedRepository(Protocol):
             filters and keyset predicate.
         """
 
+    async def get_published_digest(self, digest_id: uuid.UUID) -> Digest | None:
+        """Fetch a single published digest by its ID, with claims and citations loaded.
+
+        IMPORTANT: Only digests with status='published' are returned. If the digest
+        does not exist or is in 'draft'/'review' status, None is returned.
+
+        Args:
+            digest_id: Unique UUID of the digest.
+
+        Returns:
+            The published Digest instance if found and published; otherwise None.
+        """
+
 
 @runtime_checkable
 class DigestRepository(Protocol):

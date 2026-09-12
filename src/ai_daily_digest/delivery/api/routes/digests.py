@@ -7,6 +7,7 @@ from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from pydantic import ValidationError
 
 from ai_daily_digest.delivery.api.dependencies import get_cursor_codec, get_digest_feed_repository
 from ai_daily_digest.delivery.api.errors import ErrorEnvelope, error_response
@@ -23,9 +24,15 @@ from ai_daily_digest.delivery.api.pagination import (
     canonicalize_filters,
     validate_half_open_range,
 )
-from ai_daily_digest.delivery.api.schemas import DigestSummary
+from ai_daily_digest.delivery.api.schemas import (
+    DigestCitationDetail,
+    DigestClaimDetail,
+    DigestDetail,
+    DigestSummary,
+)
+from ai_daily_digest.shared.ids import Uuid7Id
 from ai_daily_digest.shared.repositories import DigestFeedFilter, DigestFeedRepository
-from ai_daily_digest.shared.schemas import DigestStatus
+from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestStatus
 
 DIGESTS_RESOURCE = "digests"
 DIGESTS_SORT = "digest_date:desc,id:desc"
@@ -96,6 +103,7 @@ async def get_digests(  # pylint: disable=too-many-arguments,too-many-positional
     )
     if any(item.status is not DigestStatus.PUBLISHED for item in items):
         raise RuntimeError("DigestFeedRepository returned an unpublished digest")
+
     has_more = len(items) > limit
     returned_items = items[:limit]
     next_cursor: str | None = None
@@ -119,3 +127,84 @@ async def get_digests(  # pylint: disable=too-many-arguments,too-many-positional
         for item in returned_items
     ]
     return Page[DigestSummary](items=summaries, next_cursor=next_cursor)
+
+
+@router.get(
+    "/digests/{digest_id}",
+    summary="Get published digest detail",
+    operation_id="get_digest_detail",
+    response_model=DigestDetail,
+    responses={
+        200: {"description": "The requested published digest detail."},
+        404: {"model": ErrorEnvelope, "description": "Digest not found or not published."},
+        422: {"model": ErrorEnvelope, "description": "Invalid digest ID format."},
+    },
+)
+async def get_digest_detail(
+    request: Request,
+    digest_id: Uuid7Id,
+    repository: Annotated[DigestFeedRepository, Depends(get_digest_feed_repository)],
+) -> Response | DigestDetail:
+    """Return published digest detail by ID with claims and citations.
+
+    If the digest does not exist or is not in published status, returns HTTP 404.
+    Fails closed with HTTP 500 if persisted digest violates supported-claim invariant.
+    """
+    try:
+        digest = await repository.get_published_digest(digest_id)
+    except (ValidationError, ValueError):
+        return error_response(
+            request,
+            status_code=500,
+            code="internal_error",
+            message="An unexpected error occurred.",
+        )
+    if digest is None or digest.status is not DigestStatus.PUBLISHED:
+        return error_response(
+            request,
+            status_code=404,
+            code="digest_not_found",
+            message="The requested digest was not found.",
+        )
+
+    claims: list[DigestClaimDetail] = []
+    for c in digest.claims:
+        if c.validation_status != ClaimValidationStatus.SUPPORTED or not c.citations:
+            return error_response(
+                request,
+                status_code=500,
+                code="internal_error",
+                message="An unexpected error occurred.",
+            )
+        try:
+            citations = [
+                DigestCitationDetail(
+                    snapshot_id=cit.snapshot_id,
+                    canonical_url=cit.canonical_url,
+                    source_title=cit.source_title,
+                )
+                for cit in c.citations
+            ]
+        except (ValidationError, ValueError):
+            return error_response(
+                request,
+                status_code=500,
+                code="internal_error",
+                message="An unexpected error occurred.",
+            )
+        claims.append(
+            DigestClaimDetail(
+                id=c.id,
+                text=c.text,
+                citations=citations,
+                validation_status=c.validation_status,
+            )
+        )
+
+    return DigestDetail(
+        id=digest.id,
+        digest_date=digest.digest_date,
+        status=digest.status,
+        title=digest.title,
+        claims=claims,
+    )

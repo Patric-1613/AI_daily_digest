@@ -30,6 +30,7 @@ from pydantic import (
     Field,
     HttpUrl,
     TypeAdapter,
+    field_validator,
     model_validator,
 )
 
@@ -514,6 +515,21 @@ class DigestStatus(StrEnum):
     PUBLISHED = "published"
 
 
+class DigestCitation(BaseModel):
+    """A citation linking a claim to an immutable snapshot and its source metadata."""
+
+    snapshot_id: Uuid7Id
+    canonical_url: HttpUrl
+    source_title: str
+
+    @field_validator("source_title", mode="before")
+    @classmethod
+    def _validate_source_title(cls, v: object) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("source_title must be a non-empty string")
+        return v.strip()
+
+
 class DigestClaim(BaseModel):
     """Every factual claim requires >=1 valid citation. A digest
     containing an unsupported claim cannot enter "published" status
@@ -522,6 +538,7 @@ class DigestClaim(BaseModel):
     id: Uuid7Id
     text: str
     citation_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
+    citations: list[DigestCitation] = Field(default_factory=list)
     validation_status: ClaimValidationStatus = ClaimValidationStatus.PENDING
 
 

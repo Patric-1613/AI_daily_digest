@@ -72,6 +72,7 @@ def test_only_implemented_paths_appear_in_openapi() -> None:
         "/v1/health/ready",
         "/v1/updates",
         "/v1/digests",
+        "/v1/digests/{digest_id}",
         "/v1/subscriptions",
         "/v1/subscriptions/confirm",
         "/v1/subscriptions/unsubscribe",
@@ -80,6 +81,7 @@ def test_only_implemented_paths_appear_in_openapi() -> None:
     assert set(schema["paths"]["/v1/health/ready"]) == {"get"}
     assert set(schema["paths"]["/v1/updates"]) == {"get"}
     assert set(schema["paths"]["/v1/digests"]) == {"get"}
+    assert set(schema["paths"]["/v1/digests/{digest_id}"]) == {"get"}
     assert set(schema["paths"]["/v1/subscriptions"]) == {"post"}
     assert set(schema["paths"]["/v1/subscriptions/confirm"]) == {"post"}
     assert set(schema["paths"]["/v1/subscriptions/unsubscribe"]) == {"post"}
@@ -94,6 +96,7 @@ def test_operation_ids_are_explicit_unique_and_stable_snake_case() -> None:
         "get_health_ready",
         "get_updates",
         "get_digests",
+        "get_digest_detail",
         "request_subscription",
         "confirm_subscription",
         "unsubscribe_subscription",
@@ -107,20 +110,24 @@ def test_schema_component_names_and_responses_are_stable() -> None:
     component_names = set(schema["components"]["schemas"])
 
     assert component_names == {
-        "ErrorBody",
-        "ErrorEnvelope",
+        "ClaimValidationStatus",
+        "DigestCitationDetail",
+        "DigestClaimDetail",
+        "DigestDetail",
         "DigestStatus",
         "DigestSummary",
+        "ErrorBody",
+        "ErrorEnvelope",
         "LiveResponse",
-        "Page_UpdateSummary_",
         "Page_DigestSummary_",
+        "Page_UpdateSummary_",
         "ReadinessCheckResponse",
         "ReadyResponse",
-        "UpdateSummary",
-        "Uuid7Id",
         "SubscriptionMessage",
         "SubscriptionRequest",
         "SubscriptionTokenRequest",
+        "UpdateSummary",
+        "Uuid7Id",
     }
     ready_responses = schema["paths"]["/v1/health/ready"]["get"]["responses"]
     assert ready_responses["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
@@ -147,6 +154,16 @@ def test_schema_component_names_and_responses_are_stable() -> None:
         "/ErrorEnvelope"
     )
     assert digest_responses["422"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ErrorEnvelope"
+    )
+    digest_detail_responses = schema["paths"]["/v1/digests/{digest_id}"]["get"]["responses"]
+    assert digest_detail_responses["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/DigestDetail"
+    )
+    assert digest_detail_responses["404"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ErrorEnvelope"
+    )
+    assert digest_detail_responses["422"]["content"]["application/json"]["schema"]["$ref"].endswith(
         "/ErrorEnvelope"
     )
 
