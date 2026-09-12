@@ -32,12 +32,14 @@ services:
         source: "/*"
         destination: /index.html
 
-  # Team-approved paid resource (issue #53): one Render cron service for the
-  # first live intelligence-pipeline rehearsal. Render bills cron services by
-  # runtime with a minimum of USD 1/month per service; the team approved that
-  # minimum. This runs the intelligence pipeline only -- ingestion plus
-  # intelligence orchestration is separate future work and must not be added
-  # here. See docs/DEPLOYMENT.md for approval, first-run steps, and exit codes.
+  # Team-approved paid resource (issue #53, extended by issue #113): one
+  # Render cron service that now performs the full daily
+  # ingestion -> intelligence orchestration, still within the one
+  # originally approved cron service (no second cron, worker, disk, or
+  # plan change). Render bills cron services by runtime with a minimum of
+  # USD 1/month per service; the team approved that minimum. See
+  # docs/DEPLOYMENT.md ("Combined daily pipeline") for the full outcome
+  # table and exit-code contract.
   - type: cron
     name: ai-daily-digest-intelligence
     runtime: python
@@ -48,18 +50,21 @@ services:
     # Run the already-built production console script directly. `uv run` is
     # deliberately avoided: it can resynchronize the environment at runtime
     # (potentially pulling dev/editable deps) on every paid cron execution.
-    # --previous-complete-utc-day pins the digest date to the last fully
-    # elapsed UTC day, so the selection window is that whole day
-    # ([00:00, 24:00) UTC) rather than only the ~6 hours since midnight.
-    # Consecutive daily windows are contiguous: no temporal gap, no
-    # overlap. The digest date is derived in Python from an injected
-    # clock -- no shell `date` expression.
     #
-    # --limit 5 is a deliberate cost control for this rehearsal: each run
-    # processes at most 5 snapshots from its window, so this is NOT
-    # complete production processing of every snapshot in the day. Raising
-    # or removing --limit is a separate, cost-approved change.
-    startCommand: .venv/bin/generate-digest --previous-complete-utc-day --since 24h --limit 5
+    # `run-daily-digest` (src/ai_daily_digest/daily_pipeline.py) replaces the
+    # old two-step `generate-digest --previous-complete-utc-day --since 24h
+    # --limit 5` command. That command alone never collected sources, and
+    # simply chaining `collect-rss-batch` in front of it would have been
+    # silently wrong: snapshots collection creates in this run have
+    # `fetched_at = now`, which falls in *today's* window, not the previous
+    # completed UTC day `--previous-complete-utc-day` selects -- so the
+    # freshly collected evidence would never be processed. `run-daily-digest`
+    # instead collects the verified sources (openai_news, langchain_pypi,
+    # langgraph_pypi) and then runs intelligence over the *real* collection
+    # start/finish boundary it just recorded. It still caps intelligence at
+    # 5 snapshots per run (same cost control as before) and never publishes
+    # an empty digest -- a day with no new snapshots is a healthy no-op.
+    startCommand: .venv/bin/run-daily-digest
     envVars:
       # Render's internal database reference -- the connection string is never
       # written here, in tests, or in docs. generate-digest reads DATABASE_URL
