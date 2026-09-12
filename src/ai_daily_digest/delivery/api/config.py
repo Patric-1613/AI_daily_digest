@@ -19,7 +19,11 @@ _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _MAX_TRUSTED_PROXY_ENTRIES = 16
-_SUBSCRIPTION_SETTING_NAMES = (
+# Application-specific settings only. Render supplies FORWARDED_ALLOW_IPS to every Python
+# service by default (see scripts/start_render.sh), so its mere presence must never by itself
+# signal that an operator has started configuring subscriptions -- only one of these
+# application-specific values may do that. See _subscription_production() below.
+_SUBSCRIPTION_ACTIVATION_SETTING_NAMES = (
     "SUBSCRIPTION_TOKEN_ENVIRONMENT",
     "SUBSCRIPTION_CONFIRM_KEY_ID",
     "SUBSCRIPTION_CONFIRM_KEY",
@@ -28,8 +32,10 @@ _SUBSCRIPTION_SETTING_NAMES = (
     "SUBSCRIPTION_RATE_LIMIT_KEY",
     "EMAIL_PROVIDER_API_KEY",
     "EMAIL_FROM_ADDRESS",
-    "FORWARDED_ALLOW_IPS",
 )
+# The complete set required once subscriptions are activated: every activation setting above,
+# plus the trusted-proxy allowlist.
+_SUBSCRIPTION_SETTING_NAMES = (*_SUBSCRIPTION_ACTIVATION_SETTING_NAMES, "FORWARDED_ALLOW_IPS")
 
 
 def _parse_boolean(*, name: str, value: str) -> bool:
@@ -160,7 +166,11 @@ def _subscription_production(
     values: Mapping[str, str],
 ) -> SubscriptionProductionSettings | None:
     configured = {name: values.get(name, "").strip() for name in _SUBSCRIPTION_SETTING_NAMES}
-    if not any(configured.values()):
+    activated = any(configured[name] for name in _SUBSCRIPTION_ACTIVATION_SETTING_NAMES)
+    if not activated:
+        # FORWARDED_ALLOW_IPS alone (Render's automatic default, e.g. "*") must never activate
+        # subscriptions: no application-specific setting is present, so routes stay disabled
+        # regardless of what value Render happens to have injected.
         return None
     if any(not value for value in configured.values()):
         raise ValueError("subscription production configuration is incomplete")

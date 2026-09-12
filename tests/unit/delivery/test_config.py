@@ -85,6 +85,28 @@ def test_partial_or_weak_subscription_security_configuration_fails_closed() -> N
         DeliverySettings.from_environment(weak_environment)
 
 
+def test_renders_automatic_forwarded_allow_ips_alone_does_not_activate_subscriptions() -> None:
+    """Render injects FORWARDED_ALLOW_IPS into every Python service by default (see
+    scripts/start_render.sh); with no application-specific subscription/email setting present,
+    that alone must never be read as "subscription configuration has started"."""
+    settings = DeliverySettings.from_environment(
+        {"FRONTEND_ORIGIN": FRONTEND_ORIGIN, "FORWARDED_ALLOW_IPS": "*"}
+    )
+
+    assert settings.subscription is None
+
+
+def test_single_activation_setting_without_the_rest_fails_closed() -> None:
+    with pytest.raises(ValueError, match="incomplete"):
+        DeliverySettings.from_environment(
+            {
+                "FRONTEND_ORIGIN": FRONTEND_ORIGIN,
+                "EMAIL_FROM_ADDRESS": "digest@example.com",
+                "FORWARDED_ALLOW_IPS": "*",
+            }
+        )
+
+
 def test_provider_or_proxy_configuration_without_the_security_set_fails_closed() -> None:
     with pytest.raises(ValueError, match="incomplete"):
         DeliverySettings.from_environment(

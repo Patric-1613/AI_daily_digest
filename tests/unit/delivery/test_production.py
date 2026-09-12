@@ -175,6 +175,23 @@ def test_production_factory_keeps_subscription_routes_disabled_when_set_is_absen
     assert app.state.subscription_service_factory is None
 
 
+def test_production_factory_still_fails_closed_with_one_real_key_and_renders_default_forwarded_allow_ips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the fix above: Render's default FORWARDED_ALLOW_IPS must never mask a
+    genuinely partial subscription configuration. One real application-specific setting (a
+    signing key) alongside Render's default FORWARDED_ALLOW_IPS="*" -- with every other
+    subscription/email setting absent -- must still activate validation and fail closed with the
+    existing incomplete-configuration error. create_production_app() must raise before returning
+    an app object at all, so subscription routes have no app to mount on."""
+    _configure_production(monkeypatch)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    monkeypatch.setenv("SUBSCRIPTION_CONFIRM_KEY", "c" * 32)
+
+    with pytest.raises(ValueError, match="subscription production configuration is incomplete"):
+        create_production_app()
+
+
 def test_production_factory_rejects_partial_subscription_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -183,6 +200,25 @@ def test_production_factory_rejects_partial_subscription_configuration(
 
     with pytest.raises(ValueError, match="subscription production configuration is incomplete"):
         create_production_app()
+
+
+def test_production_factory_starts_normally_with_only_renders_default_forwarded_allow_ips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test: Render supplies FORWARDED_ALLOW_IPS to every Python service by default
+    (observed value: "*"). With no application-specific subscription/email setting configured,
+    the API must start normally and keep subscription routes disabled -- not crash with
+    "subscription production configuration is incomplete"."""
+    _configure_production(monkeypatch)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+
+    app = create_production_app()
+
+    paths = app.openapi()["paths"]
+    assert "/v1/subscriptions" not in paths
+    assert "/v1/subscriptions/confirm" not in paths
+    assert "/v1/subscriptions/unsubscribe" not in paths
+    assert app.state.subscription_service_factory is None
 
 
 def test_production_factory_wires_subscription_components_and_closes_http_client(
