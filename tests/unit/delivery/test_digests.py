@@ -339,3 +339,27 @@ def test_get_digest_detail_invalid_uuid_returns_422() -> None:
     assert response.status_code == 422
     error = ErrorEnvelope.model_validate(response.json()).error
     assert error.code == "validation_error"
+
+
+def test_get_digest_detail_passes_through_claim_validation_status() -> None:
+    claim = DigestClaim(
+        id=new_id(),
+        text="A claim with unsupported status",
+        citation_snapshot_ids=[new_id()],
+        validation_status=ClaimValidationStatus.UNSUPPORTED,
+    )
+    digest = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.PUBLISHED,
+        title="Digest with unsupported claim",
+        claims=[claim],
+    )
+    client = _client([digest])
+
+    response = client.get(f"/v1/digests/{digest.id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["claims"]) == 1
+    assert data["claims"][0]["validation_status"] == "unsupported"

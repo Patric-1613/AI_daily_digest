@@ -420,7 +420,7 @@ Returns the full details and grounded claims for a specific published digest.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `digest_id` | UUID v7 string | Unique identifier of the published digest. |
+| `digest_id` | UUID string | Unique identifier of the published digest (validated as standard UUID; repo generates UUIDv7). |
 
 ### Response schema (`DigestDetail`)
 

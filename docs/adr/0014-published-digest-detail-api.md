@@ -20,7 +20,7 @@ This decision is coordinated through issue #112. Person B (`@SujinJK`) is the ac
 
 `GET /v1/digests/{digest_id}`
 
-- `digest_id` is an RFC 9562 UUID v7 path parameter.
+- `digest_id` is a UUID path parameter (parsed and validated as standard UUID; repository generates RFC 9562 UUIDv7 IDs).
 - A malformed UUID in the path returns HTTP 422 with the standard error envelope.
 
 ### 2. Published-Only Fail-Closed Security Gate
