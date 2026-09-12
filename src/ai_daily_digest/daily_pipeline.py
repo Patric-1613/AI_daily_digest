@@ -17,9 +17,42 @@ production Render cron.
    capped at five snapshots;
 4. combine both stages into one secret-safe JSON report and exit
    `0` (published, clean zero-change, or a healthy no-updates day) /
-   `1` (partial collection, or partial/review intelligence) /
+   `1` (partial collection, partial/review intelligence, or collection
+   creating more snapshots than the five-snapshot cap could select this
+   run -- "capped", see "Overflow behaviour" below) /
    `2` (collection configuration/total failure, or fatal intelligence
    failure).
+
+## Overflow behaviour
+
+`intelligence.run.select_snapshots_in_window()` has no offset or cursor:
+given the same window and `limit`, it deterministically re-selects only
+the oldest `limit` candidates by `fetched_at`, every time. So if
+collection creates more new snapshots in one run than `intelligence_limit`
+allows intelligence to select, the remainder are not "processed next
+run" -- the next run's window starts at *its own* `collection_started_at`,
+strictly after this run's window, so a bounded-limit reselect could never
+reach them anyway. `_combine_status()` detects this
+(`new_snapshot_count > intelligence_report.selected_snapshot_count`) and
+reports `capped` (exit `1`) instead of `published`/`clean_zero_change`
+(exit `0`) -- a run must never claim to be healthy while collected
+evidence went unselected. This module does not remove or raise the
+five-snapshot cost cap, and does not implement automatic continuation
+(both would need a recorded team decision and, for continuation, a
+persistence change to `select_snapshots_in_window()` itself -- outside
+this module's boundary and Person B's to review, not something to
+introduce silently here). Recovery is manual and already possible without
+any schema change: the capped run's `intelligence_window_start` (an ISO
+timestamp, printed in the JSON report) and today's UTC date are exactly
+what `generate-digest --digest-date <today> --since <intelligence_window_start> --limit <N>`
+needs to reselect the *entire* window with a larger `N` -- re-including
+the already-processed snapshots. That reselection is safe: reprocessing
+an already-recorded fact set is `intelligence/run.py`'s own existing
+"resumable recovery" path (`run_pipeline`'s per-item loop -- no new
+`Change` rows are created for a fact that already matches
+`current_facts`), so a capped run can always be made whole later without
+any duplicate evidence, without a migration, and without expanding the
+per-cron-run LLM budget.
 
 ## Why not just chain the two CLIs
 
@@ -128,6 +161,7 @@ class CombinedPipelineStatus(StrEnum):
     NO_UPDATES = "no_updates"
     REVIEW = "review"
     PARTIAL = "partial"
+    CAPPED = "capped"
     FAILED = "failed"
 
 
@@ -137,6 +171,7 @@ _EXIT_CODE_BY_COMBINED_STATUS: dict[CombinedPipelineStatus, int] = {
     CombinedPipelineStatus.NO_UPDATES: 0,
     CombinedPipelineStatus.REVIEW: 1,
     CombinedPipelineStatus.PARTIAL: 1,
+    CombinedPipelineStatus.CAPPED: 1,
     CombinedPipelineStatus.FAILED: 2,
 }
 
@@ -156,9 +191,13 @@ class DailyPipelineReport:  # pylint: disable=too-many-instance-attributes
 
 
 def daily_pipeline_exit_code(report: DailyPipelineReport) -> int:
-    """`0` published/clean-zero-change/no-updates, `1` partial/review,
+    """`0` published/clean-zero-change/no-updates, `1` partial/review/capped,
     `2` failed -- a cron caller branches on the process result without
-    parsing JSON."""
+    parsing JSON. `capped` (collection created more snapshots than
+    intelligence's `limit` allowed it to select this run) is deliberately
+    `1`, not `0`: a run must never report a healthy exit code while
+    collected evidence went unselected -- see docs/DEPLOYMENT.md
+    ("Overflow behaviour") for the operator recovery procedure."""
     return _EXIT_CODE_BY_COMBINED_STATUS[report.status]
 
 
@@ -201,10 +240,21 @@ def render_daily_pipeline_report(report: DailyPipelineReport) -> str:
 def _combine_status(
     collection_status: BatchStatus,
     intelligence_report: DigestRunReport,
+    *,
+    new_snapshot_count: int,
 ) -> CombinedPipelineStatus:
     """The combined outcome-semantics table, built entirely from the two
     stages' own existing status vocabularies. Reuses `exit_code_for`
-    (PR #111) rather than re-deriving zero-change/failure logic."""
+    (PR #111) rather than re-deriving zero-change/failure logic.
+
+    `new_snapshot_count` is collection's own count of snapshots it created
+    this run -- independent of whatever `intelligence_report` reports,
+    since `select_snapshots_in_window()` has no offset/cursor and always
+    selects only the oldest `limit` candidates in the window
+    (`intelligence/run.py::select_snapshots_in_window`). When collection
+    created more snapshots than intelligence's `selected_snapshot_count`,
+    the remainder were never even selected this run -- see CAPPED below.
+    """
     intel_exit = exit_code_for(intelligence_report)
     if intel_exit == 2:
         return CombinedPipelineStatus.FAILED
@@ -219,6 +269,13 @@ def _combine_status(
             if intelligence_report.status == "review"
             else CombinedPipelineStatus.PARTIAL
         )
+    # intel_exit == 0 (published or clean zero-change) from here. Before
+    # trusting that "healthy" verdict, confirm intelligence actually saw
+    # every snapshot collection created this run -- see docs/DEPLOYMENT.md
+    # ("Overflow behaviour") for the operator recovery procedure this
+    # status exists to trigger.
+    if new_snapshot_count > intelligence_report.selected_snapshot_count:
+        return CombinedPipelineStatus.CAPPED
     return (
         CombinedPipelineStatus.PUBLISHED
         if intelligence_report.status == "published"
@@ -312,7 +369,11 @@ async def run_daily_pipeline(  # pylint: disable=too-many-arguments,too-many-loc
         job_run_id=job_id,
         started_at=started_at,
         finished_at=clock(),
-        status=_combine_status(collection_report.status, intelligence_report),
+        status=_combine_status(
+            collection_report.status,
+            intelligence_report,
+            new_snapshot_count=new_snapshot_count,
+        ),
         intelligence_window_start=window_start,
         intelligence_window_end=window_end,
         collection=collection_report,
@@ -401,7 +462,8 @@ def _parse_args(argv: Sequence[str] | None) -> _Args:
             "With no --source-id, runs the verified set "
             "(openai_news, langchain_pypi, langgraph_pypi). "
             "Exit 0 = published, clean zero-change, or a healthy no-updates day; "
-            "1 = partial collection or partial/review intelligence; "
+            "1 = partial collection, partial/review intelligence, or collection "
+            "exceeding the intelligence snapshot limit (capped -- see docs/DEPLOYMENT.md); "
             "2 = collection configuration/total failure or fatal intelligence failure."
         ),
     )

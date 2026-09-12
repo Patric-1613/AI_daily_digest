@@ -189,6 +189,98 @@ async def test_successful_collection_then_clean_zero_change() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collection_overflow_is_capped_exit_1_not_a_false_healthy_completion() -> None:
+    """Collection creates 20 new snapshots while intelligence_limit (chunk
+    size) is 5 -- select_snapshots_in_window has no offset/cursor, so
+    intelligence only ever sees the oldest 5. The combined pipeline must
+    report `capped`/exit 1, never `published`/`clean_zero_change`/exit 0,
+    even though the 5 it did see published cleanly."""
+    collection = _batch_report(
+        status=BatchStatus.OK,
+        results=(_source_run_result(created_item_count=20, created_snapshot_count=20),),
+    )
+    intelligence_report = _digest_report(
+        status="published",
+        digest_status="published",
+        published=True,
+        selected_snapshot_count=5,
+        processed_snapshot_count=5,
+        claim_count=2,
+        extracted_change_count=2,
+    )
+    report, _collection_calls, intel_calls = await _run(
+        collection=collection,
+        intelligence=intelligence_report,
+        intelligence_limit=5,
+    )
+
+    assert report.status is CombinedPipelineStatus.CAPPED
+    assert daily_pipeline_exit_code(report) == 1
+    # Intelligence is still invoked exactly once -- overflow is detected
+    # from its result afterwards, never by looping or re-invoking it to
+    # "try to get the rest" (there is no cursor to advance with anyway).
+    assert len(intel_calls.calls) == 1
+    # The window recorded in the report is unchanged by capping -- it is
+    # exactly what an operator needs to pass as `--since` to
+    # `generate-digest` to durably replay the entire window later with a
+    # larger --limit, per docs/DEPLOYMENT.md ("Overflow behaviour").
+    assert report.intelligence_window_start == collection.started_at
+
+
+@pytest.mark.asyncio
+async def test_collection_overflow_with_clean_zero_change_is_still_capped() -> None:
+    """Overflow must be caught even when the 5 processed snapshots
+    happened to produce no changes -- clean_zero_change is also a
+    'healthy' exit-0 outcome and must not mask dropped evidence."""
+    collection = _batch_report(
+        status=BatchStatus.OK,
+        results=(_source_run_result(created_item_count=20, created_snapshot_count=20),),
+    )
+    intelligence_report = _digest_report(
+        status="draft",
+        digest_status="draft",
+        published=False,
+        selected_snapshot_count=5,
+        processed_snapshot_count=5,
+    )
+    report, _collection_calls, intel_calls = await _run(
+        collection=collection,
+        intelligence=intelligence_report,
+        intelligence_limit=5,
+    )
+
+    assert report.status is CombinedPipelineStatus.CAPPED
+    assert daily_pipeline_exit_code(report) == 1
+    assert len(intel_calls.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_collection_exactly_at_the_limit_is_not_capped() -> None:
+    """Collection creating exactly `intelligence_limit` new snapshots is
+    the normal, fully-handled case -- must not be misclassified as
+    overflow."""
+    collection = _batch_report(
+        status=BatchStatus.OK,
+        results=(_source_run_result(created_item_count=5, created_snapshot_count=5),),
+    )
+    intelligence_report = _digest_report(
+        status="published",
+        digest_status="published",
+        published=True,
+        selected_snapshot_count=5,
+        processed_snapshot_count=5,
+    )
+    report, _collection_calls, _intel_calls = await _run(
+        collection=collection,
+        intelligence=intelligence_report,
+        intelligence_limit=5,
+    )
+
+    assert report.status is CombinedPipelineStatus.PUBLISHED
+    assert daily_pipeline_exit_code(report) == 0
+
+
+@pytest.mark.asyncio
 async def test_successful_collection_with_no_new_snapshots_is_healthy_no_updates() -> None:
     collection = _batch_report(
         status=BatchStatus.OK,
@@ -362,42 +454,100 @@ async def test_rerun_with_nothing_new_is_idempotent_and_healthy() -> None:
 
 
 def test_combine_status_published() -> None:
+    report = _digest_report(status="published", published=True)
     assert (
-        _combine_status(BatchStatus.OK, _digest_report(status="published", published=True))
+        _combine_status(BatchStatus.OK, report, new_snapshot_count=report.selected_snapshot_count)
         is CombinedPipelineStatus.PUBLISHED
     )
 
 
 def test_combine_status_clean_zero_change() -> None:
+    report = _digest_report(status="draft")
     assert (
-        _combine_status(BatchStatus.OK, _digest_report(status="draft"))
+        _combine_status(BatchStatus.OK, report, new_snapshot_count=report.selected_snapshot_count)
         is CombinedPipelineStatus.CLEAN_ZERO_CHANGE
     )
 
 
 def test_combine_status_review() -> None:
+    report = _digest_report(status="review")
     assert (
-        _combine_status(BatchStatus.OK, _digest_report(status="review"))
+        _combine_status(BatchStatus.OK, report, new_snapshot_count=report.selected_snapshot_count)
         is CombinedPipelineStatus.REVIEW
     )
 
 
 def test_combine_status_partial_intelligence() -> None:
+    report = _digest_report(status="partial")
     assert (
-        _combine_status(BatchStatus.OK, _digest_report(status="partial"))
+        _combine_status(BatchStatus.OK, report, new_snapshot_count=report.selected_snapshot_count)
         is CombinedPipelineStatus.PARTIAL
     )
 
 
 def test_combine_status_collection_partial_overrides_published() -> None:
     published = _digest_report(status="published", published=True)
-    assert _combine_status(BatchStatus.PARTIAL, published) is CombinedPipelineStatus.PARTIAL
+    assert (
+        _combine_status(
+            BatchStatus.PARTIAL,
+            published,
+            new_snapshot_count=published.selected_snapshot_count,
+        )
+        is CombinedPipelineStatus.PARTIAL
+    )
 
 
 def test_combine_status_intelligence_fatal_overrides_everything() -> None:
     fatal = _digest_report(status="bogus_unknown_status")
-    assert _combine_status(BatchStatus.PARTIAL, fatal) is CombinedPipelineStatus.FAILED
-    assert _combine_status(BatchStatus.OK, fatal) is CombinedPipelineStatus.FAILED
+    assert (
+        _combine_status(
+            BatchStatus.PARTIAL, fatal, new_snapshot_count=fatal.selected_snapshot_count
+        )
+        is CombinedPipelineStatus.FAILED
+    )
+    assert (
+        _combine_status(BatchStatus.OK, fatal, new_snapshot_count=fatal.selected_snapshot_count)
+        is CombinedPipelineStatus.FAILED
+    )
+
+
+def test_combine_status_overflow_is_capped_not_healthy() -> None:
+    """Collection created more snapshots than intelligence could select
+    this run (the SQL LIMIT truncated the candidate list) -- must never
+    be reported as a healthy published/clean-zero-change result."""
+    published = _digest_report(status="published", published=True, selected_snapshot_count=5)
+    assert (
+        _combine_status(BatchStatus.OK, published, new_snapshot_count=20)
+        is CombinedPipelineStatus.CAPPED
+    )
+
+    clean = _digest_report(status="draft", selected_snapshot_count=5, processed_snapshot_count=5)
+    assert (
+        _combine_status(BatchStatus.OK, clean, new_snapshot_count=20)
+        is CombinedPipelineStatus.CAPPED
+    )
+
+
+def test_combine_status_overflow_never_hides_a_more_severe_outcome() -> None:
+    """Overflow detection only overrides an otherwise-healthy exit 0 --
+    it must not soften a genuinely worse outcome."""
+    review = _digest_report(status="review", selected_snapshot_count=5)
+    assert (
+        _combine_status(BatchStatus.OK, review, new_snapshot_count=20)
+        is CombinedPipelineStatus.REVIEW
+    )
+
+    fatal = _digest_report(status="bogus_unknown_status", selected_snapshot_count=5)
+    assert (
+        _combine_status(BatchStatus.PARTIAL, fatal, new_snapshot_count=20)
+        is CombinedPipelineStatus.FAILED
+    )
+
+    published = _digest_report(status="published", published=True, selected_snapshot_count=5)
+    assert (
+        _combine_status(BatchStatus.PARTIAL, published, new_snapshot_count=20)
+        is CombinedPipelineStatus.PARTIAL
+    )
 
 
 # -- safe final JSON --------------------------------------------------------

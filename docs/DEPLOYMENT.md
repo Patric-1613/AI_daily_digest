@@ -220,6 +220,7 @@ still requires an authorised operator's local CLI (`collect-rss`, `collect-rss-b
 | `0` | `no_updates` | Collection succeeded but created no new snapshots. Intelligence never runs; no digest is touched. |
 | `1` | `partial` | Collection partial (at least one source failed) — reported even if the sources that *did* succeed produced a clean or published intelligence result — or intelligence itself returned partial. |
 | `1` | `review` | Intelligence routed the digest to review. |
+| `1` | `capped` | Collection created more new snapshots than the five-snapshot intelligence limit could select this run. See "Overflow behaviour" immediately below — this is deliberately **not** exit `0`. |
 | `2` | `failed` | Collection configuration/total failure (every selected source failed, or the process could not start — e.g. bad `DATABASE_URL`), or a fatal intelligence failure. |
 
 A `partial` collection is **always** reported as `partial`, never silently upgraded to a healthy
@@ -227,6 +228,54 @@ exit code by a clean intelligence result on the data that did get collected — 
 still see that a source is failing. A `review`/`partial` intelligence outcome is a **valid** run,
 not a failure to fix by loosening the pipeline; this module's publication and safety gates are
 never weakened to force a publish.
+
+**Overflow behaviour, cost bound, and recovery.** `intelligence.run.select_snapshots_in_window()`
+has no offset or cursor: given the same window and `limit`, it deterministically re-selects only
+the oldest `limit` candidates by `fetched_at`, every time it is called. So when collection creates
+more new snapshots in one run than `intelligence_limit` (five, unchanged from the original
+rehearsal cron's `--limit 5`) allows intelligence to select, the remainder are **not** "processed
+next run" — the next run's window starts at *its own* `collection_started_at`, strictly after this
+run's window, so a bounded reselect could never reach them anyway.
+
+- **Detection, not silence.** `daily_pipeline.py::_combine_status()` compares collection's own
+  `new_snapshot_count` against intelligence's `selected_snapshot_count`. When collection created
+  more than intelligence could select, the combined result is `capped` (exit `1`), never
+  `published`/`clean_zero_change` (exit `0`) — a run must never claim to be healthy while
+  collected evidence went unselected, even when the five snapshots it did select processed
+  cleanly.
+- **The cost cap is unchanged.** This fix does not raise, remove, or bypass the five-snapshot
+  limit, and does not implement automatic continuation within a single cron invocation — either
+  would need its own recorded team decision, and true continuation would additionally need a
+  persistence change to `select_snapshots_in_window()` itself (an offset/cursor), which is outside
+  `daily_pipeline.py`'s module boundary and Person B's to review, not something to introduce
+  silently here. Automatic per-cron-run LLM usage therefore stays bounded at five snapshots,
+  exactly as before.
+- **Recovery is manual, deterministic, and needs no schema change.** A `capped` run's
+  `intelligence_window_start` (an ISO timestamp, printed in the JSON report's top level) is
+  exactly what an operator needs, together with today's UTC date, to reselect the *entire* window
+  with a larger `--limit`:
+
+  ```bash
+  .venv/bin/generate-digest --digest-date <today> --since <intelligence_window_start> --limit <N>
+  ```
+
+  This re-includes the snapshots already processed in the capped run. That is safe:
+  reprocessing an already-recorded fact set is `intelligence/run.py`'s own existing "resumable
+  recovery" path (`run_pipeline`'s per-item loop records no new `Change` row for a fact that
+  already matches `current_facts`), so a capped run can always be made whole later without any
+  duplicate evidence, without a migration, and without expanding the per-cron-run LLM budget. This
+  replay path is covered by
+  `tests/integration/test_daily_pipeline_integration.py::test_replaying_the_same_real_window_with_a_larger_limit_is_idempotent`
+  against a real PostgreSQL database.
+
+**This is distinct from the previous-failed-run backlog limitation.** A `capped` run's overflow
+snapshots remain inside *that run's own* window and are replayable exactly as above. Snapshots
+from an *earlier run that itself failed or was only partially collected* are a separate, narrower
+gap: that earlier window is not recorded anywhere once the run ends, so there is nothing for a
+later run to replay against without an operator remembering the approximate time range. This
+matches `docs/ARCHITECTURE.md`'s existing deferral of durable per-source watermark state (no
+`collection_runs` ledger exists yet) and is accepted as an MVP limitation, not something this fix
+addresses.
 
 ## Render free-tier constraints
 
