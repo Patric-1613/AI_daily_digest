@@ -6,4 +6,5 @@ set -eu
 # service never accepts traffic on an unmigrated schema.
 .venv/bin/alembic upgrade head
 exec .venv/bin/uvicorn ai_daily_digest.delivery.api.production:create_production_app \
-  --factory --host 0.0.0.0 --port "${PORT}"
+  --factory --host 0.0.0.0 --port "${PORT}" \
+  --proxy-headers --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-}"

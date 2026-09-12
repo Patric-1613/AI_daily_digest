@@ -6,19 +6,36 @@ import pytest
 
 from ai_daily_digest.delivery.api.config import DeliverySettings
 
+FRONTEND_ORIGIN = "https://ai-daily-digest.onrender.com"
+
+
+def _subscription_environment() -> dict[str, str]:
+    return {
+        "FRONTEND_ORIGIN": FRONTEND_ORIGIN,
+        "SUBSCRIPTION_TOKEN_ENVIRONMENT": "prod",
+        "SUBSCRIPTION_CONFIRM_KEY_ID": "prod-confirm-2026-09",
+        "SUBSCRIPTION_CONFIRM_KEY": "c" * 32,
+        "SUBSCRIPTION_UNSUBSCRIBE_KEY_ID": "prod-unsubscribe-2026-09",
+        "SUBSCRIPTION_UNSUBSCRIBE_KEY": "u" * 32,
+        "SUBSCRIPTION_RATE_LIMIT_KEY": "r" * 32,
+        "EMAIL_PROVIDER_API_KEY": "provider-key-that-must-not-leak",
+        "EMAIL_FROM_ADDRESS": "digest@example.com",
+        "FORWARDED_ALLOW_IPS": "10.0.0.9, 2001:db8::/64",
+    }
+
 
 def test_settings_load_exact_origin_and_optional_runtime_values() -> None:
     secret = "s" * 32
 
     settings = DeliverySettings.from_environment(
         {
-            "FRONTEND_ORIGIN": "https://ai-daily-digest.onrender.com",
+            "FRONTEND_ORIGIN": FRONTEND_ORIGIN,
             "DOCS_ENABLED": "false",
             "PAGINATION_CURSOR_SECRET": secret,
         }
     )
 
-    assert settings.frontend_origin == "https://ai-daily-digest.onrender.com"
+    assert settings.frontend_origin == FRONTEND_ORIGIN
     assert settings.docs_enabled is False
     assert settings.pagination_cursor_secret == secret.encode()
     assert secret not in repr(settings)
@@ -29,32 +46,28 @@ def test_cursor_secret_is_optional_until_a_repository_is_configured() -> None:
 
     assert settings.docs_enabled is True
     assert settings.pagination_cursor_secret is None
-    assert settings.subscription_security is None
+    assert settings.subscription is None
 
 
-def test_subscription_security_configuration_is_all_or_nothing_and_secret_safe() -> None:
-    confirmation_secret = "c" * 32
-    unsubscribe_secret = "u" * 32
-    rate_limit_secret = "r" * 32
-    settings = DeliverySettings.from_environment(
-        {
-            "FRONTEND_ORIGIN": "https://ai-daily-digest.onrender.com",
-            "SUBSCRIPTION_TOKEN_ENVIRONMENT": "prod",
-            "SUBSCRIPTION_CONFIRM_KEY_ID": "prod-confirm-2026-09",
-            "SUBSCRIPTION_CONFIRM_KEY": confirmation_secret,
-            "SUBSCRIPTION_UNSUBSCRIBE_KEY_ID": "prod-unsubscribe-2026-09",
-            "SUBSCRIPTION_UNSUBSCRIBE_KEY": unsubscribe_secret,
-            "SUBSCRIPTION_RATE_LIMIT_KEY": rate_limit_secret,
-        }
-    )
+def test_subscription_production_configuration_is_complete_and_secret_safe() -> None:
+    environment = _subscription_environment()
+    settings = DeliverySettings.from_environment(environment)
 
-    security = settings.subscription_security
-    assert security is not None
+    subscription = settings.subscription
+    assert subscription is not None
+    security = subscription.security
     assert security.confirmation_key_id == "prod-confirm-2026-09"
     assert security.unsubscribe_key_id == "prod-unsubscribe-2026-09"
-    assert confirmation_secret not in repr(settings)
-    assert unsubscribe_secret not in repr(settings)
-    assert rate_limit_secret not in repr(settings)
+    assert subscription.confirmation_delivery.frontend_origin == FRONTEND_ORIGIN
+    assert subscription.forwarded_allow_ips == "10.0.0.9,2001:db8::/64"
+    for sensitive_name in (
+        "SUBSCRIPTION_CONFIRM_KEY",
+        "SUBSCRIPTION_UNSUBSCRIBE_KEY",
+        "SUBSCRIPTION_RATE_LIMIT_KEY",
+        "EMAIL_PROVIDER_API_KEY",
+        "EMAIL_FROM_ADDRESS",
+    ):
+        assert environment[sensitive_name] not in repr(settings)
 
 
 def test_partial_or_weak_subscription_security_configuration_fails_closed() -> None:
@@ -66,18 +79,44 @@ def test_partial_or_weak_subscription_security_configuration_fails_closed() -> N
             }
         )
 
+    weak_environment = _subscription_environment()
+    weak_environment["SUBSCRIPTION_CONFIRM_KEY"] = "short"
     with pytest.raises(ValueError, match="at least 32 bytes"):
+        DeliverySettings.from_environment(weak_environment)
+
+
+def test_provider_or_proxy_configuration_without_the_security_set_fails_closed() -> None:
+    with pytest.raises(ValueError, match="incomplete"):
         DeliverySettings.from_environment(
             {
-                "FRONTEND_ORIGIN": "https://example.com",
-                "SUBSCRIPTION_TOKEN_ENVIRONMENT": "prod",
-                "SUBSCRIPTION_CONFIRM_KEY_ID": "confirm",
-                "SUBSCRIPTION_CONFIRM_KEY": "short",
-                "SUBSCRIPTION_UNSUBSCRIBE_KEY_ID": "unsubscribe",
-                "SUBSCRIPTION_UNSUBSCRIBE_KEY": "short",
-                "SUBSCRIPTION_RATE_LIMIT_KEY": "short",
+                "FRONTEND_ORIGIN": FRONTEND_ORIGIN,
+                "EMAIL_PROVIDER_API_KEY": "provider-key",
+                "EMAIL_FROM_ADDRESS": "digest@example.com",
+                "FORWARDED_ALLOW_IPS": "10.0.0.9",
             }
         )
+
+
+@pytest.mark.parametrize(
+    "allowlist",
+    [
+        "*",
+        "0.0.0.0/0",
+        "::/0",
+        "proxy.internal",
+        "10.0.0.5/24",
+        "10.0.0.9,,10.0.0.10",
+        "10.0.0.9,10.0.0.9",
+    ],
+)
+def test_wildcard_unbounded_or_malformed_proxy_configuration_fails_closed(
+    allowlist: str,
+) -> None:
+    environment = _subscription_environment()
+    environment["FORWARDED_ALLOW_IPS"] = allowlist
+
+    with pytest.raises(ValueError, match="FORWARDED_ALLOW_IPS"):
+        DeliverySettings.from_environment(environment)
 
 
 @pytest.mark.parametrize(
