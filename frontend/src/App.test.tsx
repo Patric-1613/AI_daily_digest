@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { DigestSummary, FetchDigests } from "./api/digests";
+import type { DigestDetail, DigestSummary, FetchDigests } from "./api/digests";
 import type { FetchUpdates, UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
 
@@ -37,6 +37,28 @@ const firstDigest: DigestSummary = {
   title: "AI Daily Digest — 7 September 2026",
 };
 
+const secondDigest: DigestSummary = {
+  ...firstDigest,
+  id: "01a034ed-e100-7e73-ab06-1fecafdc495d",
+  title: "AI Daily Digest — second edition",
+};
+
+function digestDetail(digest: DigestSummary, claimText: string): DigestDetail {
+  return {
+    ...digest,
+    claims: [{
+      id: `${digest.id.slice(0, -1)}1`,
+      text: claimText,
+      validation_status: "supported",
+      citations: [{
+        snapshot_id: "01a032cd-23e0-76d3-a27c-f608ccc02226",
+        canonical_url: "https://www.anthropic.com/news/claude-2-1",
+        source_title: "Introducing Claude 2.1",
+      }],
+    }],
+  };
+}
+
 function jsonResponse(items: UpdateSummary[], nextCursor: string | null): Response {
   return new Response(JSON.stringify({ items, next_cursor: nextCursor }), {
     status: 200,
@@ -63,6 +85,12 @@ function buttonWithText(container: HTMLElement, text: string): HTMLButtonElement
   const button = [...container.querySelectorAll("button")]
     .find((candidate) => candidate.textContent?.includes(text));
   if (!button) throw new Error(`Button not found: ${text}`);
+  return button;
+}
+
+function buttonWithLabel(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  if (!button) throw new Error(`Button not found: ${label}`);
   return button;
 }
 
@@ -180,5 +208,111 @@ describe("AI Daily Digest shell", () => {
     await act(async () => root.unmount());
 
     expect(observedSignals[0]?.aborted).toBe(true);
+  });
+
+  it("aborts stale detail requests and ignores a late response", async () => {
+    type PendingDetail = {
+      signal: AbortSignal | null;
+      resolve: (response: Response) => void;
+    };
+    const pending = new Map<string, PendingDetail>();
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") {
+        return digestJsonResponse([firstDigest, secondDigest], null);
+      }
+      if (url.pathname.startsWith("/v1/digests/")) {
+        const digestId = url.pathname.split("/").at(-1) ?? "";
+        return new Promise<Response>((resolve) => {
+          pending.set(digestId, { signal: init?.signal ?? null, resolve });
+        });
+      }
+      return jsonResponse([], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, secondDigest.title);
+
+    await act(async () => buttonWithLabel(
+      container,
+      `View details for ${firstDigest.title}`,
+    ).click());
+    expect(pending.has(firstDigest.id)).toBe(true);
+
+    await act(async () => buttonWithLabel(
+      container,
+      `View details for ${secondDigest.title}`,
+    ).click());
+    expect(pending.get(firstDigest.id)?.signal?.aborted).toBe(true);
+    expect(pending.has(secondDigest.id)).toBe(true);
+
+    await act(async () => pending.get(secondDigest.id)?.resolve(new Response(JSON.stringify(
+      digestDetail(secondDigest, "Second digest claim"),
+    ), { status: 200 })));
+    await waitForText(container, "Second digest claim");
+
+    await act(async () => pending.get(firstDigest.id)?.resolve(new Response(JSON.stringify(
+      digestDetail(firstDigest, "Stale first digest claim"),
+    ), { status: 200 })));
+    await act(async () => Promise.resolve());
+
+    expect(container.textContent).toContain("Second digest claim");
+    expect(container.textContent).not.toContain("Stale first digest claim");
+    await act(async () => root.unmount());
+  });
+
+  it("surfaces a citation-integrity failure through the retryable detail error", async () => {
+    let detailAttempts = 0;
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([firstDigest], null);
+      if (url.pathname.startsWith("/v1/digests/")) {
+        detailAttempts += 1;
+        if (detailAttempts === 1) {
+          const invalidDetail = digestDetail(firstDigest, "Must not render as a successful claim");
+          invalidDetail.claims[0]!.citations = [{
+            snapshot_id: "unsafe",
+            canonical_url: "javascript:alert(1)",
+            source_title: "Unsafe source",
+          }];
+          return new Response(JSON.stringify(invalidDetail), { status: 200 });
+        }
+        return new Response(JSON.stringify(digestDetail(firstDigest, "Recovered claim")), {
+          status: 200,
+        });
+      }
+      return jsonResponse([], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, firstDigest.title);
+
+    await act(async () => buttonWithLabel(
+      container,
+      `View details for ${firstDigest.title}`,
+    ).click());
+    await waitForText(container, "Digest details are unavailable");
+    expect(container.textContent).not.toContain("No public source link is available");
+    expect(container.textContent).not.toContain("Must not render as a successful claim");
+
+    await act(async () => buttonWithText(container, "Try again").click());
+    await waitForText(container, "Recovered claim");
+    expect(detailAttempts).toBe(2);
+
+    await act(async () => buttonWithLabel(
+      container,
+      `Close details for ${firstDigest.title}`,
+    ).click());
+    expect(container.textContent).not.toContain("Recovered claim");
+    expect(buttonWithLabel(container, `View details for ${firstDigest.title}`)).toBeTruthy();
+    await act(async () => root.unmount());
   });
 });
