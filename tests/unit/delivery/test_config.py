@@ -104,6 +104,7 @@ def test_provider_or_proxy_configuration_without_the_security_set_fails_closed()
         "0.0.0.0/0",
         "::/0",
         "proxy.internal",
+        "10.0.0.5/24",
         "10.0.0.9,,10.0.0.10",
         "10.0.0.9,10.0.0.9",
     ],

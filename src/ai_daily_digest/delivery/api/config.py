@@ -131,7 +131,12 @@ def _trusted_proxy_allowlist(value: str) -> str:
             raise ValueError("FORWARDED_ALLOW_IPS cannot trust every proxy")
         if "/" in entry:
             try:
-                network = ipaddress.ip_network(entry, strict=False)
+                # Uvicorn's ProxyHeadersMiddleware parses networks with
+                # ``strict=True``. Match that boundary so a value accepted by
+                # application configuration cannot silently become an
+                # untrusted literal when the raw environment value reaches
+                # Uvicorn's ``--forwarded-allow-ips`` option.
+                network = ipaddress.ip_network(entry, strict=True)
             except ValueError:
                 raise ValueError("FORWARDED_ALLOW_IPS contains an invalid IP or CIDR") from None
             if network.prefixlen == 0:

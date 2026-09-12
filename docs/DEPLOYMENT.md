@@ -109,13 +109,14 @@ when this complete set validates together:
 - `SUBSCRIPTION_UNSUBSCRIBE_KEY_ID` and `SUBSCRIPTION_UNSUBSCRIBE_KEY`;
 - `SUBSCRIPTION_RATE_LIMIT_KEY`;
 - `EMAIL_PROVIDER_API_KEY` and `EMAIL_FROM_ADDRESS`; and
-- `FORWARDED_ALLOW_IPS`, as a bounded comma-separated list of trusted proxy IP addresses or CIDR
-  networks.
+- `FORWARDED_ALLOW_IPS`, as a bounded comma-separated list of trusted proxy IP addresses or
+  canonical CIDR networks (for example, use `10.0.0.0/24`, not `10.0.0.5/24`).
 
-Partial, weak, malformed, duplicate, wildcard (`*`), or all-address (`0.0.0.0/0` or `::/0`)
-configuration fails startup. `scripts/start_render.sh` always passes the configured allowlist to
-Uvicorn explicitly; an empty value trusts no forwarding peer. Application rate limiting then uses
-`request.client`, after Uvicorn has accepted forwarding metadata only from that deployment-owned
+Partial, weak, malformed, duplicate, non-canonical CIDR, wildcard (`*`), or all-address
+(`0.0.0.0/0` or `::/0`) configuration fails startup. Python validates CIDRs with the same strict
+network semantics used by Uvicorn; `scripts/start_render.sh` then passes the configured allowlist
+to Uvicorn explicitly. An empty value trusts no forwarding peer. Application rate limiting uses
+`request.client` only after Uvicorn has accepted forwarding metadata from that deployment-owned
 allowlist. Application code never parses `Forwarded` or `X-Forwarded-For` itself.
 
 Person A completes activation under issue #53:
