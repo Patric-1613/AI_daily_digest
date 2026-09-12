@@ -317,13 +317,29 @@ describe("AI Daily Digest shell", () => {
     await act(async () => root.unmount());
   });
 
-  it("filters digests when period select changes", async () => {
+  it("resets cursor, closes open detail, and never sends stale cursor when period changes", async () => {
     const requestedDigestUrls: string[] = [];
+    const secondDigest: DigestSummary = {
+      id: "01a034ed-e100-7e73-ab06-1fecafdc495e",
+      digest_date: "2026-09-08",
+      status: "published",
+      title: "Filtered Week Digest — 08 September 2026",
+    };
+
     const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
       const url = new URL(String(input));
       if (url.pathname === "/v1/digests") {
         requestedDigestUrls.push(url.href);
-        return digestJsonResponse([firstDigest], null);
+        const dateFrom = url.searchParams.get("date_from");
+        if (dateFrom) {
+          return digestJsonResponse([secondDigest], null);
+        }
+        return digestJsonResponse([firstDigest], "cursor.page2.all");
+      }
+      if (url.pathname === `/v1/digests/${firstDigest.id}`) {
+        return new Response(JSON.stringify(digestDetail(firstDigest, "Initial claim detail")), {
+          status: 200,
+        });
       }
       return jsonResponse([], null);
     });
@@ -335,6 +351,18 @@ describe("AI Daily Digest shell", () => {
     await act(async () => root.render(<App />));
     await waitForText(container, firstDigest.title);
 
+    // Initial page has cursor -> load more button is present
+    expect(buttonWithText(container, "Load more digests")).toBeTruthy();
+
+    // Open detail for firstDigest
+    await act(async () => buttonWithLabel(
+      container,
+      `View details for ${firstDigest.title}`,
+    ).click());
+    await waitForText(container, "Initial claim detail");
+    expect(container.textContent).toContain("Initial claim detail");
+
+    // Change period dropdown to "week"
     const periodSelect = container.querySelector<HTMLSelectElement>("#digest-period");
     expect(periodSelect).toBeTruthy();
 
@@ -345,9 +373,21 @@ describe("AI Daily Digest shell", () => {
       }
     });
 
-    const lastDigestCall = requestedDigestUrls.at(-1) ?? "";
-    const parsedUrl = new URL(lastDigestCall);
-    expect(parsedUrl.searchParams.has("date_from")).toBe(true);
+    // Wait for filtered digest to appear
+    await waitForText(container, secondDigest.title);
+
+    // 1. Proves open detail is closed and stale detail content is removed
+    expect(container.textContent).not.toContain("Initial claim detail");
+    expect(container.textContent).not.toContain(firstDigest.title);
+
+    // 2. Proves no stale cursor was sent with the new filtered query
+    const filteredCall = requestedDigestUrls.find((call) => call.includes("date_from")) ?? "";
+    const parsedFilteredUrl = new URL(filteredCall);
+    expect(parsedFilteredUrl.searchParams.get("cursor")).toBeNull();
+    expect(parsedFilteredUrl.searchParams.get("date_from")).toBe("2026-09-05");
+
+    // 3. Proves old cursor is no longer actionable (next_cursor is null in new response)
+    expect(container.querySelector("button.loadMoreButton")).toBeNull();
 
     await act(async () => root.unmount());
   });

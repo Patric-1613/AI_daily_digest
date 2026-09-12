@@ -276,9 +276,16 @@ export default function App({
             value={digestPeriod}
             onChange={(e) => {
               const newPeriod = e.target.value as DigestPeriod;
+              digestLoadMoreController.current?.abort();
+              digestDetailController.current?.abort();
               setDigestPeriod(newPeriod);
+              setDigests([]);
+              setDigestNextCursor(null);
+              setDigestsLoadingMore(false);
               setSelectedDigestId(null);
               setDigestDetail(null);
+              setDigestDetailError(null);
+              setDigestDetailLoading(false);
               setDigestsInitialLoading(true);
               setDigestsError(null);
             }}
