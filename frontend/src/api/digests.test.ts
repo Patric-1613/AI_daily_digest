@@ -76,6 +76,25 @@ describe("digests API client", () => {
     expect(new URL(requestedUrls[0] ?? "").searchParams.get("cursor")).toBe("payload.signature");
   });
 
+  it("passes date_from and date_to filter parameters", async () => {
+    const requestedUrls: string[] = [];
+    const fetchMock: FetchDigests = vi.fn(async (input) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({ items: [], next_cursor: null }), { status: 200 });
+    });
+
+    await fetchDigestsPage({
+      apiBaseUrl: "https://api.example.com",
+      date_from: "2026-09-01",
+      date_to: "2026-09-08",
+      fetchImpl: fetchMock,
+    });
+
+    const url = new URL(requestedUrls[0] ?? "");
+    expect(url.searchParams.get("date_from")).toBe("2026-09-01");
+    expect(url.searchParams.get("date_to")).toBe("2026-09-08");
+  });
+
   it.each([
     { ...digest, status: "draft" },
     { ...digest, digest_date: "2026-02-30" },

@@ -13,6 +13,46 @@ import { publicConfig } from "./config";
 import { UpdatesFeed } from "./UpdatesFeed";
 import { SubscribeForm } from "./Subscriptions";
 
+export type DigestPeriod = "all" | "today" | "yesterday" | "week" | "month" | "year";
+
+export function getPeriodDateRange(
+  period: DigestPeriod,
+  now: Date = new Date(),
+): { date_from: string | null; date_to: string | null } {
+  const formatUtcDate = (d: Date): string => d.toISOString().slice(0, 10);
+  const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+  if (period === "all") {
+    return { date_from: null, date_to: null };
+  }
+  if (period === "today") {
+    const tomorrow = new Date(todayUtc);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    return { date_from: formatUtcDate(todayUtc), date_to: formatUtcDate(tomorrow) };
+  }
+  if (period === "yesterday") {
+    const yesterday = new Date(todayUtc);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    return { date_from: formatUtcDate(yesterday), date_to: formatUtcDate(todayUtc) };
+  }
+  if (period === "week") {
+    const weekAgo = new Date(todayUtc);
+    weekAgo.setUTCDate(weekAgo.getUTCDate() - 7);
+    return { date_from: formatUtcDate(weekAgo), date_to: null };
+  }
+  if (period === "month") {
+    const monthAgo = new Date(todayUtc);
+    monthAgo.setUTCDate(monthAgo.getUTCDate() - 30);
+    return { date_from: formatUtcDate(monthAgo), date_to: null };
+  }
+  if (period === "year") {
+    const yearAgo = new Date(todayUtc);
+    yearAgo.setUTCDate(yearAgo.getUTCDate() - 365);
+    return { date_from: formatUtcDate(yearAgo), date_to: null };
+  }
+  return { date_from: null, date_to: null };
+}
+
 type AppProps = {
   subscriptionsEnabled?: boolean;
 };
@@ -20,6 +60,7 @@ type AppProps = {
 export default function App({
   subscriptionsEnabled = publicConfig.subscriptionsEnabled,
 }: AppProps) {
+  const [digestPeriod, setDigestPeriod] = useState<DigestPeriod>("all");
   const [digests, setDigests] = useState<DigestSummary[]>([]);
   const [digestNextCursor, setDigestNextCursor] = useState<string | null>(null);
   const [digestsInitialLoading, setDigestsInitialLoading] = useState(true);
@@ -55,8 +96,11 @@ export default function App({
 
   useEffect(() => {
     const controller = new AbortController();
+    const { date_from, date_to } = getPeriodDateRange(digestPeriod);
     void fetchDigestsPage({
       apiBaseUrl: publicConfig.apiBaseUrl,
+      date_from,
+      date_to,
       signal: controller.signal,
     }).then((page) => {
       if (controller.signal.aborted) return;
@@ -77,7 +121,7 @@ export default function App({
       controller.abort();
       digestLoadMoreController.current?.abort();
     };
-  }, [digestRequestVersion]);
+  }, [digestPeriod, digestRequestVersion]);
 
   useEffect(() => {
     if (selectedDigestId === null) return undefined;
@@ -165,10 +209,13 @@ export default function App({
     digestLoadMoreController.current = controller;
     setDigestsLoadingMore(true);
     setDigestsError(null);
+    const { date_from, date_to } = getPeriodDateRange(digestPeriod);
     try {
       const page = await fetchDigestsPage({
         apiBaseUrl: publicConfig.apiBaseUrl,
         cursor: digestNextCursor,
+        date_from,
+        date_to,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -184,7 +231,7 @@ export default function App({
     } finally {
       if (!controller.signal.aborted) setDigestsLoadingMore(false);
     }
-  }, [digestNextCursor, digestsLoadingMore]);
+  }, [digestNextCursor, digestPeriod, digestsLoadingMore]);
 
   const selectDigest = useCallback((digestId: string) => {
     digestDetailController.current?.abort();
@@ -224,10 +271,31 @@ export default function App({
         <span className="today">Live source feed</span>
         <div className="headerActions">
           <label className="srOnly" htmlFor="digest-period">Browse past digests</label>
-          <select id="digest-period" defaultValue="today">
+          <select
+            id="digest-period"
+            value={digestPeriod}
+            onChange={(e) => {
+              const newPeriod = e.target.value as DigestPeriod;
+              digestLoadMoreController.current?.abort();
+              digestDetailController.current?.abort();
+              setDigestPeriod(newPeriod);
+              setDigests([]);
+              setDigestNextCursor(null);
+              setDigestsLoadingMore(false);
+              setSelectedDigestId(null);
+              setDigestDetail(null);
+              setDigestDetailError(null);
+              setDigestDetailLoading(false);
+              setDigestsInitialLoading(true);
+              setDigestsError(null);
+            }}
+          >
+            <option value="all">All editions</option>
             <option value="today">Today</option>
             <option value="yesterday">Yesterday</option>
             <option value="week">This week</option>
+            <option value="month">This month</option>
+            <option value="year">This year</option>
           </select>
           {subscriptionsEnabled ? <SubscribeForm /> : null}
         </div>
@@ -239,7 +307,7 @@ export default function App({
           <h1 id="digest-heading">The signal in AI,<span> without the noise.</span></h1>
           <p className="heroCopy">A concise, source-aware digest of the research, policy and products shaping artificial intelligence today.</p>
           <div className="heroMeta" aria-label="Digest statistics">
-            <span>{digests.length} digests loaded</span><span>{updates.length} updates loaded</span><span>Official sources</span><span>Cursor-paginated</span>
+            <span>{digests.length} digests loaded</span><span>{updates.length} updates loaded</span><span>Official sources</span>
           </div>
         </section>
 

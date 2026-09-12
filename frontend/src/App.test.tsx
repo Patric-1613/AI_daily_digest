@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App from "./App";
+import App, { getPeriodDateRange } from "./App";
 import type { DigestDetail, DigestSummary, FetchDigests } from "./api/digests";
 import type { FetchUpdates, UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
@@ -95,6 +95,7 @@ function buttonWithLabel(container: HTMLElement, label: string): HTMLButtonEleme
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
@@ -124,6 +125,7 @@ describe("AI Daily Digest shell", () => {
     expect(html).toContain("0 updates loaded");
     expect(html).toContain("Loading published digests");
     expect(html).toContain("Loading source updates");
+    expect(html).not.toContain("Cursor-paginated");
   });
 
   it("does not present non-functional controls or fabricated trust figures", () => {
@@ -314,5 +316,140 @@ describe("AI Daily Digest shell", () => {
     expect(container.textContent).not.toContain("Recovered claim");
     expect(buttonWithLabel(container, `View details for ${firstDigest.title}`)).toBeTruthy();
     await act(async () => root.unmount());
+  });
+
+  it("resets cursor, closes open detail, and never sends stale cursor when period changes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-12T12:00:00Z"));
+
+    let resolveFilteredPage!: (value: Response) => void;
+    const filteredPagePromise = new Promise<Response>((resolve) => {
+      resolveFilteredPage = resolve;
+    });
+
+    const requestedDigestUrls: string[] = [];
+    const secondDigest: DigestSummary = {
+      id: "01a034ed-e100-7e73-ab06-1fecafdc495e",
+      digest_date: "2026-09-08",
+      status: "published",
+      title: "Filtered Week Digest — 08 September 2026",
+    };
+
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") {
+        requestedDigestUrls.push(url.href);
+        const dateFrom = url.searchParams.get("date_from");
+        if (dateFrom) {
+          return filteredPagePromise;
+        }
+        return digestJsonResponse([firstDigest], "cursor.page2.all");
+      }
+      if (url.pathname === `/v1/digests/${firstDigest.id}`) {
+        return new Response(JSON.stringify(digestDetail(firstDigest, "Initial claim detail")), {
+          status: 200,
+        });
+      }
+      return jsonResponse([], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, firstDigest.title);
+
+    // Initial page has cursor -> load more button is present
+    expect(buttonWithText(container, "Load more digests")).toBeTruthy();
+
+    // Open detail for firstDigest
+    await act(async () => buttonWithLabel(
+      container,
+      `View details for ${firstDigest.title}`,
+    ).click());
+    await waitForText(container, "Initial claim detail");
+    expect(container.textContent).toContain("Initial claim detail");
+
+    // Change period dropdown to "week"
+    const periodSelect = container.querySelector<HTMLSelectElement>("#digest-period");
+    expect(periodSelect).toBeTruthy();
+
+    await act(async () => {
+      if (periodSelect) {
+        periodSelect.value = "week";
+        periodSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+
+    // IMMEDIATE assertions while filtered request is STILL PENDING:
+    // 1. Proves open detail is closed and old items/detail are immediately removed
+    expect(container.textContent).not.toContain("Initial claim detail");
+    expect(container.textContent).not.toContain(firstDigest.title);
+    expect(container.textContent).toContain("Loading published digests");
+
+    // 2. Proves old load-more button is immediately absent/non-actionable
+    expect(container.querySelector("button.loadMoreButton")).toBeNull();
+
+    // 3. Proves filtered query was dispatched without any stale cursor
+    const filteredCall = requestedDigestUrls.find((call) => call.includes("date_from")) ?? "";
+    const parsedFilteredUrl = new URL(filteredCall);
+    expect(parsedFilteredUrl.searchParams.get("cursor")).toBeNull();
+    expect(parsedFilteredUrl.searchParams.get("date_from")).toBe("2026-09-05");
+
+    // Now resolve the filtered response
+    await act(async () => {
+      resolveFilteredPage(digestJsonResponse([secondDigest], null));
+    });
+
+    // Wait for filtered digest to appear
+    await waitForText(container, secondDigest.title);
+    expect(container.textContent).toContain(secondDigest.title);
+    expect(container.querySelector("button.loadMoreButton")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+});
+
+describe("getPeriodDateRange helper", () => {
+  const fixedNow = new Date("2026-09-12T12:00:00Z");
+
+  it("returns null bounds for 'all'", () => {
+    expect(getPeriodDateRange("all", fixedNow)).toEqual({ date_from: null, date_to: null });
+  });
+
+  it("computes bounds for 'today'", () => {
+    expect(getPeriodDateRange("today", fixedNow)).toEqual({
+      date_from: "2026-09-12",
+      date_to: "2026-09-13",
+    });
+  });
+
+  it("computes bounds for 'yesterday'", () => {
+    expect(getPeriodDateRange("yesterday", fixedNow)).toEqual({
+      date_from: "2026-09-11",
+      date_to: "2026-09-12",
+    });
+  });
+
+  it("computes bounds for 'week'", () => {
+    expect(getPeriodDateRange("week", fixedNow)).toEqual({
+      date_from: "2026-09-05",
+      date_to: null,
+    });
+  });
+
+  it("computes bounds for 'month'", () => {
+    expect(getPeriodDateRange("month", fixedNow)).toEqual({
+      date_from: "2026-08-13",
+      date_to: null,
+    });
+  });
+
+  it("computes bounds for 'year'", () => {
+    expect(getPeriodDateRange("year", fixedNow)).toEqual({
+      date_from: "2025-09-12",
+      date_to: null,
+    });
   });
 });
