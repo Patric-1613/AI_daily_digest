@@ -2,10 +2,12 @@
 
 The blueprint declares three Free resources -- one FastAPI web service, one
 static frontend, one PostgreSQL database -- plus **one team-approved cron
-service** for the first live intelligence-pipeline rehearsal (issue #53).
-Render bills cron services by runtime with a minimum of USD 1/month per
-service; the team explicitly approved that minimum. The approval, first-run
-procedure, and exit-code contract are recorded in ``docs/DEPLOYMENT.md``.
+service**, originally for the intelligence-pipeline rehearsal (issue #53)
+and now running the combined daily ingestion -> intelligence orchestration
+(issue #113) within that same single service. Render bills cron services by
+runtime with a minimum of USD 1/month per service; the team explicitly
+approved that minimum. The approval, first-run procedure, and exit-code
+contract are recorded in ``docs/DEPLOYMENT.md``.
 
 These tests fail if a second cron, a worker, a disk, or any other unrelated
 paid resource is introduced, or if either secret value is ever written into
@@ -139,11 +141,12 @@ def test_intelligence_cron_runs_the_approved_rehearsal_command_on_a_utc_schedule
     assert cron["buildCommand"] == "pip install uv && uv sync --locked --no-dev --no-editable"
     # Run the already-built production console script from .venv directly -- never
     # `uv run`, which can resynchronize (and pull dev/editable deps) at runtime.
-    # --previous-complete-utc-day makes the 06:00 UTC run process the last fully
-    # elapsed UTC day ([00:00, 24:00)), not just the hours since midnight.
-    assert cron["startCommand"] == (
-        ".venv/bin/generate-digest --previous-complete-utc-day --since 24h --limit 5"
-    )
+    # `run-daily-digest` (issue #113) collects the verified RSS sources and then
+    # runs intelligence over the real collection start/finish boundary it just
+    # recorded -- not `--previous-complete-utc-day`, which would miss snapshots
+    # this same run just created. It takes no flags: the verified source set,
+    # concurrency, and the five-snapshot intelligence cap are all its defaults.
+    assert cron["startCommand"] == ".venv/bin/run-daily-digest"
     assert not cron["startCommand"].startswith("uv run")
     # The digest date is derived in Python, never pinned to a literal date here.
     assert "--digest-date" not in cron["startCommand"]
@@ -156,14 +159,13 @@ def test_intelligence_cron_runs_the_approved_rehearsal_command_on_a_utc_schedule
 def test_intelligence_cron_command_uses_no_shell_date_expression() -> None:
     start_command = _service(_CRON_NAME)["startCommand"]
 
-    # The completed-day date comes from Python (previous_complete_utc_day with an
-    # injected clock), never a shell/platform date expression that would be
-    # unportable across the Render runtime.
+    # The digest date and collection window come from Python (an injected
+    # clock inside run-daily-digest), never a shell/platform date expression
+    # that would be unportable across the Render runtime.
     for forbidden in ("$(", "${", "`", "date +", "date -u", "%Y", "%m", "%d", "yesterday"):
         assert forbidden not in start_command, (
             f"shell date expression {forbidden!r} in startCommand"
         )
-    assert "--previous-complete-utc-day" in start_command
 
     # No command substitution anywhere in the Blueprint's executable fields.
     for service in _services():
