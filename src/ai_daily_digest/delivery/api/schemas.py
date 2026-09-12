@@ -9,7 +9,23 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from ai_daily_digest.shared.ids import Uuid7Id
 from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestStatus
 
-__all__ = ["DigestClaimDetail", "DigestDetail", "DigestSummary", "UpdateSummary"]
+__all__ = [
+    "DigestCitationDetail",
+    "DigestClaimDetail",
+    "DigestDetail",
+    "DigestSummary",
+    "UpdateSummary",
+]
+
+
+class DigestCitationDetail(BaseModel):
+    """Public projection of a claim citation linking to its source."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    snapshot_id: Uuid7Id
+    canonical_url: HttpUrl | str
+    source_title: str
 
 
 class DigestClaimDetail(BaseModel):
@@ -19,8 +35,8 @@ class DigestClaimDetail(BaseModel):
 
     id: Uuid7Id
     text: str
-    citation_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
-    validation_status: ClaimValidationStatus = ClaimValidationStatus.SUPPORTED
+    citations: list[DigestCitationDetail] = Field(min_length=1)
+    validation_status: ClaimValidationStatus
 
 
 class DigestDetail(BaseModel):

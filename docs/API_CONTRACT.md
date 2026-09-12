@@ -420,7 +420,7 @@ Returns the full details and grounded claims for a specific published digest.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `digest_id` | UUID string | Unique identifier of the published digest (validated as standard UUID; repo generates UUIDv7). |
+| `digest_id` | UUIDv7 string | RFC 9562 UUIDv7 identifier of the published digest (validated via `Uuid7Id`, rejects non-v7 UUIDs with HTTP 422). |
 
 ### Response schema (`DigestDetail`)
 
@@ -434,8 +434,12 @@ Returns the full details and grounded claims for a specific published digest.
     {
       "id": "01a034ed-e100-74d1-8508-247704ced117",
       "text": "Example Model now supports a 256k-token context window.",
-      "citation_snapshot_ids": [
-        "01a032cd-23e0-76d3-a27c-f608ccc02226"
+      "citations": [
+        {
+          "snapshot_id": "01a032cd-23e0-76d3-a27c-f608ccc02226",
+          "canonical_url": "https://example.com/news/model-update",
+          "source_title": "Official Model Announcement"
+        }
       ],
       "validation_status": "supported"
     }
@@ -447,7 +451,9 @@ Returns the full details and grounded claims for a specific published digest.
 
 - **Published-only public gate**: If the requested `digest_id` does not exist or its status is not `published` (e.g. `draft` or `review`), the server returns HTTP 404 with error code `digest_not_found` and message `"The requested digest was not found."`
 - **Zero internal prompt leakage**: Responses never include internal prompts, embeddings, or subscription secrets.
-- **Traceable evidence**: Each claim includes its `citation_snapshot_ids` resolving to stored document snapshots.
+- **Traceable browser evidence**: Each claim includes its `citations` list with `snapshot_id`, `canonical_url`, and `source_title`, allowing the frontend to link directly to official sources.
+- **Editorial order**: Claims are returned in stored editorial `position ASC` order.
+- **Fail-closed invariant**: Public detail endpoints fail closed (HTTP 500) if any published claim has `validation_status != "supported"` or empty citations.
 
 `digest_date` is a real calendar date, serialized as `YYYY-MM-DD` on the wire. An impossible
 value (for example `"2026-13-40"`) is rejected at the model boundary rather than stored as an

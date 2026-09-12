@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
 from ai_daily_digest.intelligence.db.models import (
     ChangeModel,
     ChangeSetModel,
@@ -33,6 +34,7 @@ from ai_daily_digest.shared.schemas import (
     ClaimValidationStatus,
     Confidence,
     Digest,
+    DigestCitation,
     DigestClaim,
     DigestStatus,
     ExtractedFact,
@@ -763,19 +765,41 @@ class PostgresFactStore:
         for c in claims_rows:
             claims_by_digest.setdefault(c.digest_id, []).append(c)
 
-        citations_by_claim: dict[uuid.UUID, list[uuid.UUID]] = {}
+        citations_by_claim: dict[uuid.UUID, list[DigestCitation]] = {}
+        citation_snapshot_ids_by_claim: dict[uuid.UUID, list[uuid.UUID]] = {}
         if claims_rows:
             claim_ids = [c.id for c in claims_rows]
             citations_stmt = (
-                select(DigestClaimCitationModel)
+                select(
+                    DigestClaimCitationModel.claim_id,
+                    DigestClaimCitationModel.snapshot_id,
+                    SourceItemRow.canonical_url,
+                    SourceItemRow.title,
+                )
+                .outerjoin(
+                    DocumentSnapshotRow,
+                    DocumentSnapshotRow.id == DigestClaimCitationModel.snapshot_id,
+                )
+                .outerjoin(SourceItemRow, SourceItemRow.id == DocumentSnapshotRow.source_item_id)
                 .where(DigestClaimCitationModel.claim_id.in_(claim_ids))
                 .order_by(
                     DigestClaimCitationModel.claim_id, DigestClaimCitationModel.position.asc()
                 )
             )
             cit_res = await self._session.execute(citations_stmt)
-            for cit in cit_res.scalars().all():
-                citations_by_claim.setdefault(cit.claim_id, []).append(cit.snapshot_id)
+            for row in cit_res.all():
+                claim_id = row[0]
+                snapshot_id = row[1]
+                canonical_url = str(row[2] or "")
+                source_title = str(row[3] or "")
+                citation_snapshot_ids_by_claim.setdefault(claim_id, []).append(snapshot_id)
+                citations_by_claim.setdefault(claim_id, []).append(
+                    DigestCitation(
+                        snapshot_id=snapshot_id,
+                        canonical_url=canonical_url,
+                        source_title=source_title,
+                    )
+                )
 
         digests: list[Digest] = []
         for d in digest_rows:
@@ -784,7 +808,8 @@ class PostgresFactStore:
                 DigestClaim(
                     id=c.id,
                     text=c.text,
-                    citation_snapshot_ids=citations_by_claim.get(c.id, []),
+                    citation_snapshot_ids=citation_snapshot_ids_by_claim.get(c.id, []),
+                    citations=citations_by_claim.get(c.id, []),
                     validation_status=ClaimValidationStatus(c.validation_status),
                 )
                 for c in c_models

@@ -483,6 +483,10 @@ async def test_get_published_digest_database_behavior(
     assert len(retrieved.claims) == 1
     assert retrieved.claims[0].text == "Claim for Published Digest"
     assert retrieved.claims[0].citation_snapshot_ids == [snap_id]
+    assert len(retrieved.claims[0].citations) == 1
+    assert retrieved.claims[0].citations[0].snapshot_id == snap_id
+    assert retrieved.claims[0].citations[0].canonical_url == "https://example.com/item/1"
+    assert retrieved.claims[0].citations[0].source_title == "Source Item 1"
     assert retrieved.claims[0].validation_status == ClaimValidationStatus.SUPPORTED
 
     # Draft digest returns None

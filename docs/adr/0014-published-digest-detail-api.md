@@ -20,8 +20,8 @@ This decision is coordinated through issue #112. Person B (`@SujinJK`) is the ac
 
 `GET /v1/digests/{digest_id}`
 
-- `digest_id` is a UUID path parameter (parsed and validated as standard UUID; repository generates RFC 9562 UUIDv7 IDs).
-- A malformed UUID in the path returns HTTP 422 with the standard error envelope.
+- `digest_id` is an RFC 9562 UUIDv7 path parameter validated via `Uuid7Id`.
+- Non-v7 or malformed UUIDs in the path return HTTP 422 with the standard validation error envelope.
 
 ### 2. Published-Only Fail-Closed Security Gate
 
@@ -39,6 +39,7 @@ The endpoint serves public consumers and must strictly enforce publication bound
   }
   ```
 - This prevents draft, unvalidated, or review-pending intelligence from being exposed before two-layer publication gates pass.
+- Fails closed with HTTP 500 if a published digest contains claims with `validation_status != "supported"` or missing citations.
 
 ### 3. Response Schema (`DigestDetail`)
 
@@ -52,8 +53,12 @@ The endpoint serves public consumers and must strictly enforce publication bound
     {
       "id": "01a034ed-e100-74d1-8508-247704ced117",
       "text": "Example Model now supports a 256k-token context window.",
-      "citation_snapshot_ids": [
-        "01a032cd-23e0-76d3-a27c-f608ccc02226"
+      "citations": [
+        {
+          "snapshot_id": "01a032cd-23e0-76d3-a27c-f608ccc02226",
+          "canonical_url": "https://example.com/news/model-update",
+          "source_title": "Official Model Announcement"
+        }
       ],
       "validation_status": "supported"
     }
@@ -61,8 +66,8 @@ The endpoint serves public consumers and must strictly enforce publication bound
 }
 ```
 
-- `claims` is a list of `DigestClaimDetail` items ordered deterministically by `id ASC`.
-- Each claim includes its `id`, grounded `text`, list of `citation_snapshot_ids`, and `validation_status` (`"supported"` | `"unsupported"`).
+- `claims` is a list of `DigestClaimDetail` items ordered deterministically by editorial `position ASC`.
+- Each claim includes its `id`, grounded `text`, list of `citations` (`snapshot_id`, `canonical_url`, `source_title`), and explicit `validation_status` (`"supported"`).
 - Public responses never contain raw LLM prompts, intermediate reasoning tokens, vector embeddings, database credentials, or subscriber email addresses.
 
 ### 4. Shared Repository Protocol
@@ -72,15 +77,15 @@ The `DigestFeedRepository` protocol in `src/ai_daily_digest/shared/repositories.
 ```python
 async def get_published_digest(self, digest_id: uuid.UUID) -> Digest | None:
     """Retrieve a published digest by ID with claims loaded.
-    
+
     Returns None if the digest does not exist or its status is not PUBLISHED.
     """
 ```
 
-`PostgresFactStore` in `src/ai_daily_digest/intelligence/db/repository.py` implements this method by querying `DigestModel` with `selectinload(DigestModel.claims)` and filtering by `id == digest_id` and `status == DigestStatus.PUBLISHED.value`.
+`PostgresFactStore` in `src/ai_daily_digest/intelligence/db/repository.py` implements this method by querying `DigestModel` with single-query batch hydration joining `DocumentSnapshotRow` and `SourceItemRow`, filtering by `id == digest_id` and `status == DigestStatus.PUBLISHED.value`.
 
 ## Consequences
 
-- The public API now provides complete, evidence-traceable detail for published digests.
-- Consumers can render grounded claims and navigate to cited snapshot sources.
+- The public API now provides complete, evidence-traceable detail for published digests including direct canonical source URLs.
+- Consumers can render grounded claims and navigate directly to official sources.
 - Draft and review digests remain completely private and unreachable via the public HTTP interface.

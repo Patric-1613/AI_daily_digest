@@ -514,6 +514,14 @@ class DigestStatus(StrEnum):
     PUBLISHED = "published"
 
 
+class DigestCitation(BaseModel):
+    """A citation linking a claim to an immutable snapshot and its source metadata."""
+
+    snapshot_id: Uuid7Id
+    canonical_url: str
+    source_title: str
+
+
 class DigestClaim(BaseModel):
     """Every factual claim requires >=1 valid citation. A digest
     containing an unsupported claim cannot enter "published" status
@@ -522,6 +530,7 @@ class DigestClaim(BaseModel):
     id: Uuid7Id
     text: str
     citation_snapshot_ids: list[Uuid7Id] = Field(default_factory=list)
+    citations: list[DigestCitation] = Field(default_factory=list)
     validation_status: ClaimValidationStatus = ClaimValidationStatus.PENDING
 
 

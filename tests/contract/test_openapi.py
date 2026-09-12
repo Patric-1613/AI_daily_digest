@@ -111,6 +111,7 @@ def test_schema_component_names_and_responses_are_stable() -> None:
 
     assert component_names == {
         "ClaimValidationStatus",
+        "DigestCitationDetail",
         "DigestClaimDetail",
         "DigestDetail",
         "DigestStatus",
