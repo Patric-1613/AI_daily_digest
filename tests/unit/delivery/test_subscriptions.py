@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.delivery.api.app import create_app
+from ai_daily_digest.delivery.subscriptions.models import (
+    SubscriptionModel,
+    SubscriptionStatus,
+    SubscriptionTokenModel,
+)
 from ai_daily_digest.delivery.subscriptions.repository import (
+    SubscriptionConfirmationResult,
     SubscriptionRepository,
     SubscriptionRequestResult,
     network_identity,
@@ -20,20 +30,43 @@ from ai_daily_digest.delivery.subscriptions.service import (
 from ai_daily_digest.delivery.subscriptions.tokens import (
     InvalidSubscriptionTokenError,
     IssuedSubscriptionToken,
+    SubscriptionTokenCodec,
+    SubscriptionTokenEnvironment,
     SubscriptionTokenPurpose,
 )
 
 
 class _AssertingConfirmationDelivery:
-    def __init__(self, *, expected_address: str, expected_token: str) -> None:
+    def __init__(
+        self,
+        *,
+        expected_address: str,
+        expected_token: str,
+        expected_unsubscribe_token: str | None = None,
+    ) -> None:
         self.expected_address = expected_address
         self.expected_token_digest = hashlib.sha256(expected_token.encode("ascii")).hexdigest()
         self.calls = 0
+        self.expected_unsubscribe_token_digest = (
+            hashlib.sha256(expected_unsubscribe_token.encode("ascii")).hexdigest()
+            if expected_unsubscribe_token is not None
+            else None
+        )
+        self.unsubscribe_calls = 0
 
     async def send_confirmation(self, *, address: str, token: str) -> None:
         assert address == self.expected_address
         assert hashlib.sha256(token.encode("ascii")).hexdigest() == self.expected_token_digest
         self.calls += 1
+
+    async def send_unsubscribe(self, *, address: str, token: str) -> None:
+        assert address == self.expected_address
+        assert self.expected_unsubscribe_token_digest is not None
+        assert (
+            hashlib.sha256(token.encode("ascii")).hexdigest()
+            == self.expected_unsubscribe_token_digest
+        )
+        self.unsubscribe_calls += 1
 
 
 def test_email_normalization_preserves_local_part_and_normalizes_domain() -> None:
@@ -106,6 +139,158 @@ async def test_service_does_not_call_delivery_when_no_confirmation_was_issued() 
     await service.request_subscription("Reader@example.com", "192.0.2.8")
 
     assert delivery.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_delivers_one_purpose_bound_unsubscribe_token_after_commit() -> None:
+    repository = AsyncMock(spec=SubscriptionRepository)
+    repository.consume_rate_limit.return_value = True
+    raw_unsubscribe_token = "raw-unsubscribe-capability"
+    result = SubscriptionConfirmationResult(
+        address="Reader@example.com",
+        unsubscribe_token=IssuedSubscriptionToken(
+            token=raw_unsubscribe_token,
+            token_digest=hashlib.sha256(raw_unsubscribe_token.encode("ascii")).hexdigest(),
+            key_id="test-unsubscribe-1",
+            purpose=SubscriptionTokenPurpose.UNSUBSCRIBE,
+        ),
+    )
+    repository.confirm.side_effect = [result, InvalidSubscriptionTokenError()]
+    delivery = _AssertingConfirmationDelivery(
+        expected_address="Reader@example.com",
+        expected_token="unused-confirmation-token",
+        expected_unsubscribe_token=raw_unsubscribe_token,
+    )
+    service = SubscriptionService(
+        repository,
+        rate_limit_key=b"r" * 32,
+        confirmation_delivery=delivery,
+    )
+
+    await service.confirm("confirmation-capability", "192.0.2.8")
+    with pytest.raises(InvalidSubscriptionTokenError):
+        await service.confirm("confirmation-capability", "192.0.2.8")
+
+    assert repository.confirm.await_count == 2
+    assert delivery.calls == 0
+    assert delivery.unsubscribe_calls == 1
+
+
+class _FakeTransaction:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    async def __aenter__(self) -> None:
+        self._events.append("begin")
+
+    async def __aexit__(self, *_: object) -> None:
+        self._events.append("commit")
+
+
+class _ConfirmSession:
+    def __init__(
+        self,
+        *,
+        subscription: SubscriptionModel,
+        confirmation_token: SubscriptionTokenModel,
+    ) -> None:
+        self._scalar_results: list[object] = [
+            subscription.id,
+            subscription,
+            confirmation_token,
+        ]
+        self.events: list[str] = []
+        self.added: list[object] = []
+
+    def begin(self) -> _FakeTransaction:
+        return _FakeTransaction(self.events)
+
+    async def scalar(self, _statement: object) -> object:
+        return self._scalar_results.pop(0)
+
+    async def execute(self, _statement: object) -> None:
+        self.events.append("execute")
+
+    def add(self, value: object) -> None:
+        self.added.append(value)
+        self.events.append("add")
+
+
+@pytest.mark.asyncio
+async def test_repository_confirmation_persists_only_unsubscribe_digest_before_return() -> None:
+    now = datetime(2026, 9, 13, 10, tzinfo=UTC)
+    codec = SubscriptionTokenCodec(
+        environment=SubscriptionTokenEnvironment.TEST,
+        keys={
+            SubscriptionTokenPurpose.CONFIRM: {"test-confirm": b"c" * 32},
+            SubscriptionTokenPurpose.UNSUBSCRIBE: {"test-unsubscribe": b"u" * 32},
+        },
+        active_key_ids={
+            SubscriptionTokenPurpose.CONFIRM: "test-confirm",
+            SubscriptionTokenPurpose.UNSUBSCRIBE: "test-unsubscribe",
+        },
+        random_bytes=lambda _: b"r" * 32,
+    )
+    confirmation = codec.issue(SubscriptionTokenPurpose.CONFIRM)
+    subscription_id = uuid.UUID("018d5d5e-1000-7000-8000-000000000001")
+    subscription = SubscriptionModel(
+        id=subscription_id,
+        normalized_email="Reader@example.com",
+        status=SubscriptionStatus.PENDING.value,
+        consent_generation=1,
+        consented_at=now,
+        confirmed_at=None,
+        unsubscribed_at=None,
+        suppressed_at=None,
+        suppression_reason=None,
+        created_at=now,
+        updated_at=now,
+    )
+    confirmation_row = SubscriptionTokenModel(
+        id=uuid.UUID("018d5d5e-1000-7000-8000-000000000002"),
+        subscription_id=subscription_id,
+        purpose=confirmation.purpose.value,
+        token_digest=confirmation.token_digest,
+        key_id=confirmation.key_id,
+        consent_generation=1,
+        created_at=now,
+        expires_at=now + timedelta(hours=24),
+        used_at=None,
+        revoked_at=None,
+    )
+    session = _ConfirmSession(
+        subscription=subscription,
+        confirmation_token=confirmation_row,
+    )
+    repository = SubscriptionRepository(
+        cast(AsyncSession, session),
+        codec,
+        clock=lambda: now,
+    )
+
+    result = await repository.confirm(confirmation.token)
+
+    persisted_tokens = [
+        value for value in session.added if isinstance(value, SubscriptionTokenModel)
+    ]
+    assert session.events[-1] == "commit"
+    assert len(persisted_tokens) == 1
+    persisted = persisted_tokens[0]
+    assert persisted.purpose == SubscriptionTokenPurpose.UNSUBSCRIBE.value
+    assert persisted.expires_at is None
+    assert persisted.token_digest == result.unsubscribe_token.token_digest
+    assert persisted.token_digest != result.unsubscribe_token.token
+    assert result.unsubscribe_token.token not in repr(result)
+    assert result.address not in repr(result)
+    codec.verify(
+        result.unsubscribe_token.token,
+        expected_purpose=SubscriptionTokenPurpose.UNSUBSCRIBE,
+    )
+    with pytest.raises(InvalidSubscriptionTokenError):
+        codec.verify(
+            result.unsubscribe_token.token,
+            expected_purpose=SubscriptionTokenPurpose.CONFIRM,
+        )
 
 
 def _client(service: SubscriptionService | AsyncMock) -> TestClient:

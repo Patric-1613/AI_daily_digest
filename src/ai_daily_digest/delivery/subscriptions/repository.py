@@ -7,7 +7,7 @@ import hmac
 import ipaddress
 import unicodedata
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 
@@ -84,6 +84,14 @@ def keyed_identity_digest(key: bytes, *, purpose: str, value: str) -> str:
 @dataclass(frozen=True)
 class SubscriptionRequestResult:
     confirmation_token: IssuedSubscriptionToken | None
+
+
+@dataclass(frozen=True)
+class SubscriptionConfirmationResult:
+    """Transient values produced by one committed confirmation transition."""
+
+    address: str = field(repr=False)
+    unsubscribe_token: IssuedSubscriptionToken = field(repr=False)
 
 
 class SubscriptionRepository:
@@ -170,7 +178,7 @@ class SubscriptionRepository:
             )
         return SubscriptionRequestResult(confirmation_token=issued)
 
-    async def confirm(self, raw_token: str) -> None:
+    async def confirm(self, raw_token: str) -> SubscriptionConfirmationResult:
         verified = self._codec.verify(raw_token, expected_purpose=SubscriptionTokenPurpose.CONFIRM)
         now = self._clock()
         async with self._session.begin():
@@ -213,6 +221,26 @@ class SubscriptionRepository:
                 )
                 .values(revoked_at=now)
             )
+            unsubscribe_token = self._codec.issue(SubscriptionTokenPurpose.UNSUBSCRIBE)
+            self._session.add(
+                SubscriptionTokenModel(
+                    id=new_id(),
+                    subscription_id=subscription.id,
+                    purpose=unsubscribe_token.purpose.value,
+                    token_digest=unsubscribe_token.token_digest,
+                    key_id=unsubscribe_token.key_id,
+                    consent_generation=subscription.consent_generation,
+                    created_at=now,
+                    expires_at=None,
+                    used_at=None,
+                    revoked_at=None,
+                )
+            )
+            normalized_address = subscription.normalized_email
+        return SubscriptionConfirmationResult(
+            address=normalized_address,
+            unsubscribe_token=unsubscribe_token,
+        )
 
     async def issue_unsubscribe_token(self, subscription_id: uuid.UUID) -> IssuedSubscriptionToken:
         now = self._clock()

@@ -70,6 +70,14 @@ database engine. Provider failures retain the generic HTTP 202 subscription resp
 a coarse error category; no address, raw token, API key, provider body, or complete confirmation
 URL is logged or returned.
 
+After a valid confirmation, the confirmation transaction also persists one current-generation
+unsubscribe-token digest. Only after that commit does the service ask the same Resend adapter to
+send a separate unsubscribe-link message. Its human link uses the configured frontend origin and
+`/subscriptions/unsubscribe#token=<token>`; the raw token is never stored or placed in a query
+string. A provider failure records only its safe error type and does not undo or change the public
+confirmation result. This transactional message is not a digest or campaign send and adds no new
+provider configuration.
+
 ### Local production-command verification
 
 From a clean checkout on Python 3.12:
