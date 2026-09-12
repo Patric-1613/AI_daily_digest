@@ -89,7 +89,7 @@ class ResendConfirmationSettings:
 def _validated_sender(value: str) -> str:
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise ConfirmationDeliveryConfigurationError()
-    display_name, mailbox = parseaddr(value, strict=True)
+    display_name, mailbox = parseaddr(value)
     try:
         normalized_mailbox = normalize_email(mailbox)
     except ValueError:
