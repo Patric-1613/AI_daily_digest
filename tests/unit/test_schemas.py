@@ -10,11 +10,13 @@ from enum import StrEnum
 import pytest
 from pydantic import ValidationError
 
+from ai_daily_digest.shared.ids import new_id
 from ai_daily_digest.shared.schemas import (
     Change,
     ClaimValidationStatus,
     Digest,
     DigestClaim,
+    DigestClaimChange,
     DigestStatus,
     DisclosureStatus,
     ExtractedFact,
@@ -850,3 +852,99 @@ def test_digest_date_is_immutable() -> None:
     digest = Digest(id=DIGEST_1, digest_date=date(2026, 9, 2), title="Test")
     with pytest.raises(ValidationError):
         digest.digest_date = date(2026, 1, 1)
+
+
+def test_digest_claim_change_id_defaults_to_none() -> None:
+    claim = DigestClaim(
+        id=CLAIM_1,
+        text="Test claim text",
+        citation_snapshot_ids=[SNAPSHOT_1],
+    )
+    assert claim.change_id is None
+
+
+def test_digest_claim_change_id_accepts_uuid7() -> None:
+    claim = DigestClaim(
+        id=CLAIM_1,
+        change_id=CHANGE_1,
+        text="Test claim text",
+        citation_snapshot_ids=[SNAPSHOT_1],
+    )
+    assert claim.change_id == CHANGE_1
+
+
+def test_digest_claim_change_id_serialization() -> None:
+    claim = DigestClaim(
+        id=CLAIM_1,
+        change_id=CHANGE_1,
+        text="Test claim text",
+        citation_snapshot_ids=[SNAPSHOT_1],
+    )
+    dumped = claim.model_dump(mode="json")
+    assert dumped["change_id"] == str(CHANGE_1)
+
+
+def test_digest_claim_with_structured_change_projection() -> None:
+    change_proj = DigestClaimChange(
+        id=CHANGE_1,
+        company="Anthropic",
+        product="Claude 3.5 Sonnet",
+        field="context_window_tokens",
+        change_type="increased",
+        previous_value="100000",
+        current_value="200000",
+    )
+    claim = DigestClaim(
+        id=CLAIM_1,
+        change_id=CHANGE_1,
+        change=change_proj,
+        text="Claude 3.5 Sonnet context window increased to 200000",
+        citation_snapshot_ids=[SNAPSHOT_1],
+    )
+    assert claim.change is not None
+    assert claim.change.company == "Anthropic"
+    assert claim.change.product == "Claude 3.5 Sonnet"
+    assert claim.change.field == "context_window_tokens"
+    assert claim.change.change_type == "increased"
+    assert claim.change.previous_value == "100000"
+    assert claim.change.current_value == "200000"
+
+
+def test_digest_claim_with_change_but_no_change_id_is_rejected() -> None:
+    change_proj = DigestClaimChange(
+        id=CHANGE_1,
+        company="Anthropic",
+        product="Claude 3.5 Sonnet",
+        field="context_window_tokens",
+        change_type="increased",
+        previous_value="100000",
+        current_value="200000",
+    )
+    with pytest.raises(ValidationError, match="change_id must be set when change is provided"):
+        DigestClaim(
+            id=CLAIM_1,
+            change_id=None,
+            change=change_proj,
+            text="Claude 3.5 Sonnet context window increased",
+            citation_snapshot_ids=[SNAPSHOT_1],
+        )
+
+
+def test_digest_claim_with_mismatched_change_id_and_change_is_rejected() -> None:
+    change_proj = DigestClaimChange(
+        id=CHANGE_1,
+        company="Anthropic",
+        product="Claude 3.5 Sonnet",
+        field="context_window_tokens",
+        change_type="increased",
+        previous_value="100000",
+        current_value="200000",
+    )
+    with pytest.raises(ValidationError, match=r"must match change\.id"):
+        DigestClaim(
+            id=CLAIM_1,
+            change_id=new_id(),
+            change=change_proj,
+            text="Claude 3.5 Sonnet context window increased",
+            citation_snapshot_ids=[SNAPSHOT_1],
+        )

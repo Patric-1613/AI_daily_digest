@@ -15,6 +15,11 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_daily_digest.ingestion.db.models import DocumentSnapshotRow, SourceItemRow
+from ai_daily_digest.intelligence.db.models import (
+    ChangeModel,
+    ChangeSetModel,
+    SubjectModel,
+)
 from ai_daily_digest.intelligence.db.repository import (
     PostgresDigestRepository,
     PostgresFactStore,
@@ -67,6 +72,70 @@ async def _create_snapshot(
     session.add(snap)
     await session.flush()
     return item_id, snap_id
+
+
+async def _create_change(
+    session: AsyncSession,
+    *,
+    company_key: str = "openai",
+    product_key: str = "gpt_4o",
+    company: str = "OpenAI",
+    product: str = "GPT-4o",
+    field: str = "context_window",
+    change_type: str = "increased",
+    previous_value: str | None = '{"tokens": 128000}',
+    current_value: str | None = '{"tokens": 256000}',
+    observed_at: datetime = BASE_TIME,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Helper to create subject, snapshot, change_set, and change for linking."""
+    _, snap_id = await _create_snapshot(session, fetched_at=observed_at)
+
+    subject = await session.get(SubjectModel, (company_key, product_key))
+    if subject is None:
+        subject = SubjectModel(
+            company_key=company_key,
+            product_key=product_key,
+            company=company,
+            product=product,
+            created_at=observed_at,
+        )
+        session.add(subject)
+        await session.flush()
+
+    change_set_id = new_id()
+    change_set = ChangeSetModel(
+        id=change_set_id,
+        company_key=company_key,
+        product_key=product_key,
+        review_status="approved",
+        created_at=observed_at,
+    )
+    session.add(change_set)
+    await session.flush()
+
+    change_id = new_id()
+    change = ChangeModel(
+        id=change_id,
+        detected_at=observed_at,
+        change_set_id=change_set_id,
+        position=0,
+        company_key=company_key,
+        product_key=product_key,
+        field=field,
+        change_type=change_type,
+        confidence=1.0,
+        review_status="approved",
+        previous_value=previous_value,
+        previous_observed_at=observed_at,
+        previous_snapshot_id=snap_id,
+        current_value=current_value,
+        current_observed_at=observed_at,
+        current_snapshot_id=snap_id,
+        created_at=observed_at,
+    )
+    session.add(change)
+    await session.flush()
+    return change_id, snap_id
 
 
 @pytest.mark.asyncio
@@ -583,3 +652,86 @@ async def test_publish_digest_row_lock_blocks_concurrent_claim_mutation(
                 {"did": digest_id},
             )
             await cleanup_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_persist_and_hydrate_digest_claim_linked_change(
+    database_session: AsyncSession,
+) -> None:
+    """persist_digest() stores change_id and get_digest_by_id() hydrates structured change."""
+    change_id, snap_id = await _create_change(
+        database_session,
+        company="OpenAI",
+        product="GPT-4o",
+        field="context_window",
+        change_type="increased",
+        previous_value='{"tokens": 128000}',
+        current_value='{"tokens": 256000}',
+    )
+    repo = PostgresDigestRepository(database_session)
+
+    digest_id = new_id()
+    claim_id = new_id()
+    claim = DigestClaim(
+        id=claim_id,
+        change_id=change_id,
+        text="OpenAI increased context window to 256k",
+        citation_snapshot_ids=[snap_id],
+        validation_status=ClaimValidationStatus.PENDING,
+    )
+    draft_digest = Digest(
+        id=digest_id,
+        digest_date=date(2026, 9, 14),
+        status=DigestStatus.DRAFT,
+        title="Linked Change Digest",
+        claims=[claim],
+    )
+
+    await repo.persist_digest(draft_digest)
+
+    stored = await repo.get_digest_by_id(digest_id)
+    assert stored is not None
+    assert len(stored.claims) == 1
+    assert stored.claims[0].id == claim_id
+    assert stored.claims[0].change_id == change_id
+    assert stored.claims[0].change is not None
+    assert stored.claims[0].change.id == change_id
+    assert stored.claims[0].change.company == "OpenAI"
+    assert stored.claims[0].change.product == "GPT-4o"
+    assert stored.claims[0].change.field == "context_window"
+    assert stored.claims[0].change.change_type == "increased"
+    assert stored.claims[0].change.previous_value == '{"tokens": 128000}'
+    assert stored.claims[0].change.current_value == '{"tokens": 256000}'
+
+
+@pytest.mark.asyncio
+async def test_persist_digest_claim_invalid_change_id_raises_foreign_key_violation(
+    database_session: AsyncSession,
+) -> None:
+    """persist_digest() with non-existent change_id raises DBAPIError on flush."""
+    _, snap_id = await _create_snapshot(database_session)
+    repo = PostgresDigestRepository(database_session)
+
+    digest_id = new_id()
+    claim_id = new_id()
+    invalid_change_id = new_id()
+    claim = DigestClaim(
+        id=claim_id,
+        change_id=invalid_change_id,
+        text="Claim referencing non-existent change",
+        citation_snapshot_ids=[snap_id],
+        validation_status=ClaimValidationStatus.PENDING,
+    )
+    draft_digest = Digest(
+        id=digest_id,
+        digest_date=date(2026, 9, 14),
+        status=DigestStatus.DRAFT,
+        title="Invalid FK Digest",
+        claims=[claim],
+    )
+
+    with pytest.raises(DBAPIError) as exc_info:
+        await repo.persist_digest(draft_digest)
+        await database_session.flush()
+
+    assert "violates foreign key constraint" in str(exc_info.value)

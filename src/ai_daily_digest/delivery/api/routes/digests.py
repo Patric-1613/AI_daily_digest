@@ -26,13 +26,18 @@ from ai_daily_digest.delivery.api.pagination import (
 )
 from ai_daily_digest.delivery.api.schemas import (
     DigestCitationDetail,
+    DigestClaimChangeDetail,
     DigestClaimDetail,
     DigestDetail,
     DigestSummary,
 )
 from ai_daily_digest.shared.ids import Uuid7Id
 from ai_daily_digest.shared.repositories import DigestFeedFilter, DigestFeedRepository
-from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestStatus
+from ai_daily_digest.shared.schemas import (
+    ClaimValidationStatus,
+    DigestClaim,
+    DigestStatus,
+)
 
 DIGESTS_RESOURCE = "digests"
 DIGESTS_SORT = "digest_date:desc,id:desc"
@@ -129,6 +134,61 @@ async def get_digests(  # pylint: disable=too-many-arguments,too-many-positional
     return Page[DigestSummary](items=summaries, next_cursor=next_cursor)
 
 
+def _project_change_detail(claim: DigestClaim) -> DigestClaimChangeDetail | None:
+    """Project a structured change diff, returning None if unlinked or invalid."""
+    if claim.change is None:
+        return None
+    if claim.change_id is None or claim.change_id != claim.change.id:
+        return None
+    try:
+        return DigestClaimChangeDetail(
+            id=claim.change.id,
+            company=claim.change.company,
+            product=claim.change.product,
+            field=claim.change.field,
+            change_type=claim.change.change_type,
+            previous_value=claim.change.previous_value,
+            current_value=claim.change.current_value,
+        )
+    except (ValidationError, ValueError):
+        return None
+
+
+def _project_claim_detail(claim: DigestClaim) -> DigestClaimDetail | None:
+    """Project a shared DigestClaim to DigestClaimDetail, returning None on integrity violation."""
+    if claim.validation_status != ClaimValidationStatus.SUPPORTED or not claim.citations:
+        return None
+    try:
+        citations = [
+            DigestCitationDetail(
+                snapshot_id=cit.snapshot_id,
+                canonical_url=cit.canonical_url,
+                source_title=cit.source_title,
+            )
+            for cit in claim.citations
+        ]
+    except (ValidationError, ValueError):
+        return None
+
+    change_detail = _project_change_detail(claim)
+    if claim.change is not None and change_detail is None:
+        return None
+    if claim.change is None and claim.change_id is not None:
+        return None
+
+    try:
+        return DigestClaimDetail(
+            id=claim.id,
+            change_id=claim.change_id,
+            change=change_detail,
+            text=claim.text,
+            citations=citations,
+            validation_status=claim.validation_status,
+        )
+    except (ValidationError, ValueError):
+        return None
+
+
 @router.get(
     "/digests/{digest_id}",
     summary="Get published digest detail",
@@ -169,37 +229,15 @@ async def get_digest_detail(
 
     claims: list[DigestClaimDetail] = []
     for c in digest.claims:
-        if c.validation_status != ClaimValidationStatus.SUPPORTED or not c.citations:
+        claim_detail = _project_claim_detail(c)
+        if claim_detail is None:
             return error_response(
                 request,
                 status_code=500,
                 code="internal_error",
                 message="An unexpected error occurred.",
             )
-        try:
-            citations = [
-                DigestCitationDetail(
-                    snapshot_id=cit.snapshot_id,
-                    canonical_url=cit.canonical_url,
-                    source_title=cit.source_title,
-                )
-                for cit in c.citations
-            ]
-        except (ValidationError, ValueError):
-            return error_response(
-                request,
-                status_code=500,
-                code="internal_error",
-                message="An unexpected error occurred.",
-            )
-        claims.append(
-            DigestClaimDetail(
-                id=c.id,
-                text=c.text,
-                citations=citations,
-                validation_status=c.validation_status,
-            )
-        )
+        claims.append(claim_detail)
 
     return DigestDetail(
         id=digest.id,

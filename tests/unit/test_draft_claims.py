@@ -39,6 +39,26 @@ def test_first_disclosure_phrasing_and_single_citation() -> None:
     assert "now disclosed as 71.2" in claim.text
     assert claim.citation_snapshot_ids == [TDC_SNAP_CURRENT]
     assert claim.validation_status == "pending"
+    assert claim.change_id == CHANGE_1
+
+
+def test_draft_change_claim_sets_change_id() -> None:
+    change = Change(
+        id=CHANGE_1,
+        change_set_id=CHANGE_SET_1,
+        subject=_subject(),
+        field="benchmark_scores",
+        change_type="disclosed",
+        previous=None,
+        current=FactObservation(
+            value="71.2",
+            snapshot_id=TDC_SNAP_CURRENT,
+        ),
+        confidence=0.9,
+        detected_at=TDC_DETECTED_AT,
+    )
+    claim = draft_change_claim(change)
+    assert claim.change_id == CHANGE_1
 
 
 def test_increased_phrasing_cites_both_snapshots() -> None:

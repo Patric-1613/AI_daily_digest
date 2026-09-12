@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 from ai_daily_digest.shared.ids import Uuid7Id
 from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestStatus
 
 __all__ = [
     "DigestCitationDetail",
+    "DigestClaimChangeDetail",
     "DigestClaimDetail",
     "DigestDetail",
     "DigestSummary",
@@ -35,15 +37,42 @@ class DigestCitationDetail(BaseModel):
         return v.strip()
 
 
+class DigestClaimChangeDetail(BaseModel):
+    """Public projection of a claim's originating change diff."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: Uuid7Id
+    company: str
+    product: str
+    field: str
+    change_type: str
+    previous_value: str | None = None
+    current_value: str | None = None
+
+
 class DigestClaimDetail(BaseModel):
     """Public detail projection of a published digest claim."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: Uuid7Id
+    change_id: Uuid7Id | None = None
+    change: DigestClaimChangeDetail | None = None
     text: str
     citations: list[DigestCitationDetail] = Field(min_length=1)
     validation_status: ClaimValidationStatus
+
+    @model_validator(mode="after")
+    def _validate_change_linkage(self) -> Self:
+        if self.change is not None:
+            if self.change_id is None:
+                raise ValueError("change_id must be set when change is provided")
+            if self.change_id != self.change.id:
+                raise ValueError(
+                    f"change_id ({self.change_id}) must match change.id ({self.change.id})"
+                )
+        return self
 
 
 class DigestDetail(BaseModel):

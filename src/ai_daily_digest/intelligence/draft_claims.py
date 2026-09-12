@@ -75,6 +75,7 @@ def draft_change_claim(change: Change) -> DigestClaim:
 
     return DigestClaim(
         id=new_id(),
+        change_id=change.id,
         text=text,
         citation_snapshot_ids=citation_ids,
         validation_status=ClaimValidationStatus.PENDING,

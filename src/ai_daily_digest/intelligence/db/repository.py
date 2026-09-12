@@ -36,6 +36,7 @@ from ai_daily_digest.shared.schemas import (
     Digest,
     DigestCitation,
     DigestClaim,
+    DigestClaimChange,
     DigestStatus,
     ExtractedFact,
     FactObservation,
@@ -804,12 +805,48 @@ class PostgresFactStore:
                 )
                 citations_by_claim.setdefault(claim_id, []).append(citation)
 
+        changes_by_id: dict[uuid.UUID, DigestClaimChange] = {}
+        if claims_rows:
+            change_ids = [c.change_id for c in claims_rows if c.change_id is not None]
+            if change_ids:
+                changes_stmt = (
+                    select(
+                        ChangeModel.id,
+                        SubjectModel.company,
+                        SubjectModel.product,
+                        ChangeModel.field,
+                        ChangeModel.change_type,
+                        ChangeModel.previous_value,
+                        ChangeModel.current_value,
+                    )
+                    .join(
+                        SubjectModel,
+                        (ChangeModel.company_key == SubjectModel.company_key)
+                        & (ChangeModel.product_key == SubjectModel.product_key),
+                    )
+                    .where(ChangeModel.id.in_(change_ids))
+                )
+                ch_res = await self._session.execute(changes_stmt)
+                for ch_row in ch_res.all():
+                    cid, comp, prod, fld, ctype, pval, cval = ch_row
+                    changes_by_id[cid] = DigestClaimChange(
+                        id=cid,
+                        company=comp,
+                        product=prod,
+                        field=fld,
+                        change_type=ctype,
+                        previous_value=pval,
+                        current_value=cval,
+                    )
+
         digests: list[Digest] = []
         for d in digest_rows:
             c_models = claims_by_digest.get(d.id, [])
             digest_claims = [
                 DigestClaim(
                     id=c.id,
+                    change_id=c.change_id,
+                    change=changes_by_id.get(c.change_id) if c.change_id is not None else None,
                     text=c.text,
                     citation_snapshot_ids=citation_snapshot_ids_by_claim.get(c.id, []),
                     citations=citations_by_claim.get(c.id, []),
@@ -903,6 +940,7 @@ class PostgresFactStore:
             c_model = DigestClaimModel(
                 id=claim.id,
                 digest_id=digest.id,
+                change_id=claim.change_id,
                 position=claim_pos,
                 text=claim.text,
                 validation_status=claim.validation_status.value,
