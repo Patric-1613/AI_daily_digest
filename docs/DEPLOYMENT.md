@@ -230,9 +230,9 @@ and review.
 
 | Exit code | Meaning |
 |---|---|
-| `0` | Digest published. |
-| `1` | Digest routed to review, or a partial run (some snapshots failed). |
-| `2` | Run failed / could not start (e.g. database unreachable, bad arguments). |
+| `0` | Digest published, or provably clean zero-change run with processed snapshots. |
+| `1` | Digest routed to review, partial run (some snapshots failed or unresolved), or empty snapshot selection window. |
+| `2` | Run failed / could not start (e.g. database unreachable, bad arguments, fatal error). |
 
 A `review` / `partial` outcome (exit `1`) is a **valid rehearsal result**, not a failure to fix
 by loosening the pipeline. The pipeline's publication and safety gates are not to be weakened to

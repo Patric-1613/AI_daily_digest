@@ -20,7 +20,8 @@
 7. assemble and publish the daily `Digest` aggregate via `PostgresFactStore`,
    preserving two-layer publication gates and safety policies;
 8. print `DigestRunReport` as single-line JSON to stdout and exit
-   `0` (published) / `1` (partial or review) / `2` (failed / could not start).
+   `0` (published or clean zero-change) / `1` (partial, review, or empty selection) /
+   `2` (failed / could not start).
 """
 
 from __future__ import annotations
@@ -208,9 +209,32 @@ def render_report(report: DigestRunReport) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+def _is_clean_zero_change_draft(report: DigestRunReport) -> bool:
+    """Return True if report represents a provably clean zero-change run
+    with processed snapshots.
+    """
+    if report.status != "draft" or report.published:
+        return False
+    if report.selected_snapshot_count <= 0:
+        return False
+    if report.processed_snapshot_count != report.selected_snapshot_count:
+        return False
+    if report.extracted_change_count != 0 or report.claim_count != 0:
+        return False
+    if report.failed_snapshot_count != 0 or report.unresolved_snapshot_count != 0:
+        return False
+    return not report.failures
+
+
 def exit_code_for(report: DigestRunReport) -> int:
-    """0 ok/published, 1 review/partial, 2 failed."""
+    """Return process exit code:
+    - 0: Published digest OR provably clean zero-change run with processed snapshots.
+    - 1: Partial run (item failures), unresolved items, review-required claims, or empty selection.
+    - 2: Fatal error / could not start / failed status.
+    """
     if report.status == "published":
+        return 0
+    if _is_clean_zero_change_draft(report):
         return 0
     if report.status in ("partial", "review", "draft"):
         return 1
@@ -765,7 +789,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     """`generate-digest` entry point.
 
     Parses CLI flags, resolves selection window, runs pipeline, emits JSON report,
-    and returns 0 (published) / 1 (partial or review) / 2 (failed to start).
+    and returns 0 (published or clean zero-change) / 1 (partial, review, or
+    empty selection) / 2 (failed to start).
     """
     logging.basicConfig(level=logging.INFO)
     args = _parse_args(argv)

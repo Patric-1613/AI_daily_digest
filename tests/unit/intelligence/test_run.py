@@ -302,28 +302,185 @@ def test_render_report_json() -> None:
 def test_exit_codes() -> None:
     now = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
 
-    def _make_report(status: str) -> DigestRunReport:
-        return DigestRunReport(
-            digest_id=None,
-            digest_date="2026-09-07",
-            status=status,
-            digest_status=status,
-            selected_snapshot_count=0,
-            processed_snapshot_count=0,
-            failed_snapshot_count=0,
-            unresolved_snapshot_count=0,
-            extracted_change_count=0,
-            claim_count=0,
-            published=(status == "published"),
-            started_at=now,
-            completed_at=now,
-        )
+    def _base_report(**kwargs: Any) -> DigestRunReport:
+        defaults: dict[str, Any] = {
+            "digest_id": None,
+            "digest_date": "2026-09-07",
+            "status": "draft",
+            "digest_status": "draft",
+            "selected_snapshot_count": 0,
+            "processed_snapshot_count": 0,
+            "failed_snapshot_count": 0,
+            "unresolved_snapshot_count": 0,
+            "extracted_change_count": 0,
+            "claim_count": 0,
+            "published": False,
+            "started_at": now,
+            "completed_at": now,
+            "failures": [],
+        }
+        defaults.update(kwargs)
+        return DigestRunReport(**defaults)
 
-    assert exit_code_for(_make_report("published")) == 0
-    assert exit_code_for(_make_report("partial")) == 1
-    assert exit_code_for(_make_report("review")) == 1
-    assert exit_code_for(_make_report("draft")) == 1
-    assert exit_code_for(_make_report("failed")) == 2
+    # 1. Published -> 0
+    assert exit_code_for(_base_report(status="published", published=True)) == 0
+    assert (
+        exit_code_for(
+            _base_report(
+                status="published",
+                published=True,
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                claim_count=1,
+            )
+        )
+        == 0
+    )
+
+    # 2. Clean zero-change with processed snapshots -> 0
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                digest_status="draft",
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                extracted_change_count=0,
+                claim_count=0,
+                failed_snapshot_count=0,
+                unresolved_snapshot_count=0,
+                failures=[],
+                published=False,
+            )
+        )
+        == 0
+    )
+
+    # 3. Zero selected snapshots -> 1
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                selected_snapshot_count=0,
+                processed_snapshot_count=0,
+            )
+        )
+        == 1
+    )
+
+    # 4. Partial -> 1
+    assert (
+        exit_code_for(
+            _base_report(
+                status="partial",
+                selected_snapshot_count=2,
+                processed_snapshot_count=1,
+                failed_snapshot_count=1,
+                failures=[{"snapshot_id": "s1", "error": "timeout"}],
+            )
+        )
+        == 1
+    )
+
+    # 5. Review -> 1
+    assert (
+        exit_code_for(
+            _base_report(
+                status="review",
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                claim_count=1,
+            )
+        )
+        == 1
+    )
+
+    # 6. Unresolved snapshots -> 1
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                unresolved_snapshot_count=1,
+            )
+        )
+        == 1
+    )
+
+    # 7. Failed snapshots -> 1
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                failed_snapshot_count=1,
+            )
+        )
+        == 1
+    )
+
+    # 8. Explicit failed status -> 2
+    assert exit_code_for(_base_report(status="failed", digest_status="failed")) == 2
+
+    # 9. Processed/selected count mismatch -> 1
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                selected_snapshot_count=3,
+                processed_snapshot_count=2,
+            )
+        )
+        == 1
+    )
+
+    # 10. Unexpected claims or changes in a draft -> 1
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                claim_count=1,
+            )
+        )
+        == 1
+    )
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                extracted_change_count=1,
+            )
+        )
+        == 1
+    )
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                failures=[{"snapshot_id": "s1", "error": "err"}],
+            )
+        )
+        == 1
+    )
+    assert (
+        exit_code_for(
+            _base_report(
+                status="draft",
+                selected_snapshot_count=2,
+                processed_snapshot_count=2,
+                published=True,
+            )
+        )
+        == 1
+    )
 
 
 def test_never_auto_publish_comparisons() -> None:
