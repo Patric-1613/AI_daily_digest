@@ -1,8 +1,9 @@
-# Person A live confirmation smoke for issue #53
+# Person A live subscription smoke for issue #53
 
-Use this checklist for the controlled Render and Resend confirmation smoke. Person A owns every
+Use this checklist for the controlled Render and Resend subscription smoke. Person A owns every
 deployed environment value. Person C may help verify behavior but must not receive, copy, or record
-those values. This smoke does not close issue #53 because unsubscribe delivery is not shipped.
+those values. This smoke does not close issue #53; closing it remains Person A's deployment
+responsibility.
 
 ## 1. Complete the Person A preflight
 
@@ -30,11 +31,11 @@ those values. This smoke does not close issue #53 because unsubscribe delivery i
 - [ ] Select one published digest ID, then run `GET /v1/digests/{digest_id}` and confirm its claims
       and official citations are returned.
 
-## 3. Turn on the deployed frontend confirmation page
+## 3. Turn on the deployed frontend subscription pages
 
 - [ ] In the Render static-site environment, Person A sets
-      `VITE_SUBSCRIPTIONS_ENABLED=true` and rebuilds the deployed frontend before opening a
-      confirmation link. The confirmation page is not mounted without this build-time flag.
+      `VITE_SUBSCRIPTIONS_ENABLED=true` and rebuilds the deployed frontend before opening a token
+      link. The subscription pages are not mounted without this build-time flag.
 - [ ] Keep `VITE_SUBSCRIPTIONS_ENABLED` unset or false in Git. This is a temporary Render
       environment change only.
 
@@ -55,28 +56,29 @@ those values. This smoke does not close issue #53 because unsubscribe delivery i
 - [ ] Complete confirmation and verify the success state. Refresh the page and confirm the raw token
       is not restored to the browser address, displayed by the page, or placed in a request URL.
 
-## 5. Record unsubscribe as blocked
+## 5. Receive and exercise the unsubscribe link
 
-No shipped service, repository, or Resend-adapter path sends an unsubscribe token. Therefore the
-unsubscribe part of the lifecycle is **BLOCKED**, even when confirmation passes.
+- [ ] Confirm exactly one separate unsubscribe-link message arrives through Resend after the
+      successful confirmation.
+- [ ] Inspect the unsubscribe link without recording it. Confirm it uses the configured public
+      frontend origin and `/subscriptions/unsubscribe#token=`, never a query string.
+- [ ] Open the link on the deployed frontend and complete the explicit JSON
+      `POST /v1/subscriptions/unsubscribe` action. Confirm the generic success result.
+- [ ] Reopen the same valid link and verify the idempotent success result without another state
+      transition or another email.
 
-- [ ] Record unsubscribe as blocked and leave issue #53 open.
-- [ ] Do not manually mint a token, extract one from the database, scrape logs, add an endpoint, or
-      otherwise create a token-delivery path to manufacture a passing result.
+## 6. Set the deployed frontend flag from the result
 
-## 6. Turn the deployed frontend flag back off
-
-- [ ] Whether confirmation passed or failed, Person A sets `VITE_SUBSCRIPTIONS_ENABLED=false` or
-      removes it from the Render static-site environment while unsubscribe remains blocked.
-- [ ] Rebuild the Render static site if required for the build-time flag change to take effect, and
-      verify the deployed confirmation and unsubscribe pages are no longer mounted.
-- [ ] Leave the flag unset or false in Git. It may be enabled in Render again only after an approved
-      unsubscribe-delivery path exists and the complete lifecycle can be tested.
+- [ ] If either confirmation or unsubscribe delivery/action failed, Person A sets
+      `VITE_SUBSCRIPTIONS_ENABLED=false` or removes it from the Render static-site environment and
+      rebuilds the site if required for the build-time change to take effect.
+- [ ] Leave the flag enabled in Render only after the complete controlled lifecycle passes. Keep it
+      unset or false in Git.
 
 ## 7. Record sanitized evidence only
 
 - [ ] Record the deployed commit SHA, UTC test time, endpoint status codes, confirmation pass/fail,
-      unsubscribe **BLOCKED**, and frontend-flag rollback in issue #53.
+      unsubscribe pass/fail, and final frontend-flag state in issue #53.
 - [ ] Do not record or copy an email address, raw token, API key, provider payload, request headers,
       database URL, secret, or complete token-bearing URL into the issue, a pull request, a log, or
       a screenshot.

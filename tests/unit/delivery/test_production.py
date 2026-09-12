@@ -67,6 +67,10 @@ class _FailingConfirmationAdapter:
         del address, token
         raise ConfirmationDeliveryUnavailableError()
 
+    async def send_unsubscribe(self, *, address: str, token: str) -> None:
+        del address, token
+        raise ConfirmationDeliveryUnavailableError()
+
 
 class _DeliveryCallingService:
     def __init__(
@@ -88,6 +92,10 @@ class _DeliveryCallingService:
 
     async def confirm(self, token: str, network: str) -> None:
         del token, network
+        await self._confirmation_delivery.send_unsubscribe(
+            address="Reader@example.com",
+            token="opaque-unsubscribe-token-that-must-not-leak",
+        )
 
     async def unsubscribe(self, token: str, network: str) -> None:
         del token, network
@@ -304,6 +312,46 @@ def test_provider_failure_keeps_generic_subscription_response_without_leakage(
         configured["EMAIL_PROVIDER_API_KEY"],
     ):
         assert sensitive not in observable
+
+
+def test_unsubscribe_delivery_failure_keeps_confirm_response_without_leakage(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _configure_production(monkeypatch)
+    configured = _enable_subscriptions(monkeypatch)
+    http_client = _FakeHttpClient()
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda: cast(httpx.AsyncClient, http_client),
+    )
+    monkeypatch.setattr(
+        production_module,
+        "ResendConfirmationDelivery",
+        _FailingConfirmationAdapter,
+    )
+    monkeypatch.setattr(production_module, "SubscriptionService", _DeliveryCallingService)
+    caplog.set_level(logging.WARNING, logger=production_module.__name__)
+
+    with TestClient(create_production_app()) as client:
+        response = client.post(
+            "/v1/subscriptions/confirm",
+            json={"token": "opaque-confirm-token-that-must-not-leak"},
+            headers={"Origin": FRONTEND_ORIGIN},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"message": "Your subscription has been confirmed."}
+    observable = f"{response.text}\n{caplog.text}"
+    for sensitive in (
+        "Reader@example.com",
+        "opaque-confirm-token-that-must-not-leak",
+        "opaque-unsubscribe-token-that-must-not-leak",
+        configured["EMAIL_PROVIDER_API_KEY"],
+    ):
+        assert sensitive not in observable
+    assert caplog.records[-1].__dict__["delivery_error"] == "ConfirmationDeliveryUnavailableError"
 
 
 def test_render_start_command_passes_an_explicit_proxy_allowlist_to_uvicorn() -> None:

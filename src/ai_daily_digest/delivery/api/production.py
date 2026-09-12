@@ -34,7 +34,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class _PrivacyPreservingConfirmationDelivery:
-    """Keep provider failures indistinguishable at the public subscribe boundary."""
+    """Keep provider failures from changing public subscription outcomes."""
 
     def __init__(self, delegate: ConfirmationDelivery) -> None:
         self._delegate = delegate
@@ -45,6 +45,15 @@ class _PrivacyPreservingConfirmationDelivery:
         except ConfirmationDeliveryError as exc:
             LOGGER.warning(
                 "Subscription confirmation delivery failed",
+                extra={"delivery_error": type(exc).__name__},
+            )
+
+    async def send_unsubscribe(self, *, address: str, token: str) -> None:
+        try:
+            await self._delegate.send_unsubscribe(address=address, token=token)
+        except ConfirmationDeliveryError as exc:
+            LOGGER.warning(
+                "Subscription unsubscribe-link delivery failed",
                 extra={"delivery_error": type(exc).__name__},
             )
 
