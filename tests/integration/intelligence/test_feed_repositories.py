@@ -486,7 +486,7 @@ async def test_get_published_digest_database_behavior(
     assert len(retrieved.claims[0].citations) == 1
     assert retrieved.claims[0].citations[0].snapshot_id == snap_id
     assert (
-        retrieved.claims[0].citations[0].canonical_url
+        str(retrieved.claims[0].citations[0].canonical_url)
         == f"https://openai.example.com/news/{item_id}"
     )
     assert retrieved.claims[0].citations[0].source_title == "Sample Release"
