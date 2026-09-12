@@ -27,6 +27,7 @@ from ai_daily_digest.shared.schemas import (
     Digest,
     DigestCitation,
     DigestClaim,
+    DigestClaimChange,
     DigestStatus,
 )
 
@@ -572,9 +573,19 @@ def test_get_digest_detail_returns_claims_with_change_id() -> None:
     claim_id = new_id()
     change_id = new_id()
     snap_id = new_id()
+    change = DigestClaimChange(
+        id=change_id,
+        company="OpenAI",
+        product="GPT-4o",
+        field="context_window",
+        change_type="increased",
+        previous_value='{"tokens": 128000}',
+        current_value='{"tokens": 256000}',
+    )
     claim = DigestClaim(
         id=claim_id,
         change_id=change_id,
+        change=change,
         text="OpenAI increased context window to 256k",
         citation_snapshot_ids=[snap_id],
         citations=[
@@ -603,6 +614,14 @@ def test_get_digest_detail_returns_claims_with_change_id() -> None:
     assert detail.claims[0].id == claim_id
     assert detail.claims[0].change_id == change_id
     assert detail.claims[0].text == "OpenAI increased context window to 256k"
+    assert detail.claims[0].change is not None
+    assert detail.claims[0].change.id == change_id
+    assert detail.claims[0].change.company == "OpenAI"
+    assert detail.claims[0].change.product == "GPT-4o"
+    assert detail.claims[0].change.field == "context_window"
+    assert detail.claims[0].change.change_type == "increased"
+    assert detail.claims[0].change.previous_value == '{"tokens": 128000}'
+    assert detail.claims[0].change.current_value == '{"tokens": 256000}'
 
 
 def test_get_digest_detail_supports_claim_without_change_id() -> None:
@@ -611,6 +630,7 @@ def test_get_digest_detail_supports_claim_without_change_id() -> None:
     claim = DigestClaim(
         id=claim_id,
         change_id=None,
+        change=None,
         text="General industry overview claim",
         citation_snapshot_ids=[snap_id],
         citations=[
@@ -638,3 +658,40 @@ def test_get_digest_detail_supports_claim_without_change_id() -> None:
     assert len(detail.claims) == 1
     assert detail.claims[0].id == claim_id
     assert detail.claims[0].change_id is None
+    assert detail.claims[0].change is None
+
+
+def test_get_digest_detail_fails_closed_when_linked_change_is_not_hydrated() -> None:
+    claim_id = new_id()
+    change_id = new_id()
+    snap_id = new_id()
+    claim = DigestClaim(
+        id=claim_id,
+        change_id=change_id,
+        change=None,  # Missing hydrated change entity
+        text="Claim with unresolvable change reference",
+        citation_snapshot_ids=[snap_id],
+        citations=[
+            DigestCitation(
+                snapshot_id=snap_id,
+                canonical_url="https://openai.com/index/gpt-4o",  # type: ignore[arg-type]
+                source_title="OpenAI Blog",
+            )
+        ],
+        validation_status=ClaimValidationStatus.SUPPORTED,
+    )
+    digest = Digest(
+        id=new_id(),
+        digest_date=date(2026, 9, 12),
+        status=DigestStatus.PUBLISHED,
+        title="Corrupted linked change digest",
+        claims=[claim],
+    )
+    client = _client([digest])
+
+    response = client.get(f"/v1/digests/{digest.id}")
+
+    assert response.status_code == 500
+    error = ErrorEnvelope.model_validate(response.json()).error
+    assert error.code == "internal_error"
+    assert "unresolvable" not in response.text

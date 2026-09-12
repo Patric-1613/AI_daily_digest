@@ -15,6 +15,7 @@ from ai_daily_digest.shared.schemas import (
     ClaimValidationStatus,
     Digest,
     DigestClaim,
+    DigestClaimChange,
     DigestStatus,
     DisclosureStatus,
     ExtractedFact,
@@ -880,3 +881,29 @@ def test_digest_claim_change_id_serialization() -> None:
     )
     dumped = claim.model_dump(mode="json")
     assert dumped["change_id"] == str(CHANGE_1)
+
+
+def test_digest_claim_with_structured_change_projection() -> None:
+    change_proj = DigestClaimChange(
+        id=CHANGE_1,
+        company="Anthropic",
+        product="Claude 3.5 Sonnet",
+        field="context_window_tokens",
+        change_type="increased",
+        previous_value="100000",
+        current_value="200000",
+    )
+    claim = DigestClaim(
+        id=CLAIM_1,
+        change_id=CHANGE_1,
+        change=change_proj,
+        text="Claude 3.5 Sonnet context window increased to 200000",
+        citation_snapshot_ids=[SNAPSHOT_1],
+    )
+    assert claim.change is not None
+    assert claim.change.company == "Anthropic"
+    assert claim.change.product == "Claude 3.5 Sonnet"
+    assert claim.change.field == "context_window_tokens"
+    assert claim.change.change_type == "increased"
+    assert claim.change.previous_value == "100000"
+    assert claim.change.current_value == "200000"

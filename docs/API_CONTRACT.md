@@ -434,6 +434,15 @@ Returns the full details and grounded claims for a specific published digest.
     {
       "id": "01a034ed-e100-74d1-8508-247704ced117",
       "change_id": "01a034ed-e100-74d1-8508-247704ced118",
+      "change": {
+        "id": "01a034ed-e100-74d1-8508-247704ced118",
+        "company": "Anthropic",
+        "product": "Claude 3.5 Sonnet",
+        "field": "context_window_tokens",
+        "change_type": "increased",
+        "previous_value": "100000",
+        "current_value": "200000"
+      },
       "text": "Example Model now supports a 256k-token context window.",
       "citations": [
         {

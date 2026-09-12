@@ -11,6 +11,7 @@ from ai_daily_digest.shared.schemas import ClaimValidationStatus, DigestStatus
 
 __all__ = [
     "DigestCitationDetail",
+    "DigestClaimChangeDetail",
     "DigestClaimDetail",
     "DigestDetail",
     "DigestSummary",
@@ -35,6 +36,20 @@ class DigestCitationDetail(BaseModel):
         return v.strip()
 
 
+class DigestClaimChangeDetail(BaseModel):
+    """Public projection of a claim's originating change diff."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: Uuid7Id
+    company: str
+    product: str
+    field: str
+    change_type: str
+    previous_value: str | None = None
+    current_value: str | None = None
+
+
 class DigestClaimDetail(BaseModel):
     """Public detail projection of a published digest claim."""
 
@@ -42,6 +57,7 @@ class DigestClaimDetail(BaseModel):
 
     id: Uuid7Id
     change_id: Uuid7Id | None = None
+    change: DigestClaimChangeDetail | None = None
     text: str
     citations: list[DigestCitationDetail] = Field(min_length=1)
     validation_status: ClaimValidationStatus
