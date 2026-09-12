@@ -433,6 +433,7 @@ Returns the full details and grounded claims for a specific published digest.
   "claims": [
     {
       "id": "01a034ed-e100-74d1-8508-247704ced117",
+      "change_id": "01a034ed-e100-74d1-8508-247704ced118",
       "text": "Example Model now supports a 256k-token context window.",
       "citations": [
         {
