@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 import { DigestFeed } from "./DigestFeed";
 import { DigestsApiError, fetchDigestsPage, mergeDigests } from "./api/digests";
 import type { DigestSummary } from "./api/digests";
@@ -8,15 +7,6 @@ import type { UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
 import { UpdatesFeed } from "./UpdatesFeed";
 import { SubscribeForm } from "./Subscriptions";
-
-const models = [
-  { name: "Claude", icon: "✦", colors: ["#7B5CFF", "#B45CFF"] },
-  { name: "GPT-4", icon: "◎", colors: ["#00D9E8", "#1473E6"] },
-  { name: "Gemini", icon: "✧", colors: ["#5B8CFF", "#B65CFF"] },
-  { name: "DeepSeek", icon: "◈", colors: ["#22B7E8", "#4055D8"] },
-  { name: "Llama", icon: "∞", colors: ["#5675FF", "#7B5CFF"] },
-  { name: "Grok", icon: "𝕏", colors: ["#F58025", "#D84A5C"] },
-];
 
 type AppProps = {
   subscriptionsEnabled?: boolean;
@@ -186,27 +176,6 @@ export default function App({
           </div>
         </section>
 
-        <section className="modelSection" aria-labelledby="models-heading">
-          <div className="sectionIntro">
-            <div><p className="sectionLabel">Illustrative model explorer · not API-backed</p><h2 id="models-heading">Follow the systems making news</h2></div>
-            <span className="railHint">Scroll to explore →</span>
-          </div>
-          <div className="modelRail">
-            {models.map((model, index) => {
-              const tileStyle = {
-                "--model-start": model.colors[0],
-                "--model-end": model.colors[1],
-                "--float-delay": `${index * -0.45}s`,
-              } as CSSProperties;
-              return (
-                <button className="modelTile" key={model.name} style={tileStyle} type="button" aria-label={`Explore ${model.name} updates`}>
-                  <span className="modelIcon" aria-hidden="true">{model.icon}</span><span>{model.name}</span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
         <div className="contentGrid">
           <div className="feedsColumn">
             <DigestFeed
@@ -229,17 +198,8 @@ export default function App({
             />
           </div>
 
-          <aside className="chatCard" aria-labelledby="chat-heading">
-            <span className="statusDot" aria-hidden="true" /><p className="sectionLabel">Illustrative assistant preview · not API-backed</p><h2 id="chat-heading">Ask about today&apos;s digest.</h2>
-            <p className="chatIntro">Get a quick answer grounded in the stories and sources collected for this edition.</p>
-            <div className="quickReplies"><button type="button">What&apos;s new in AI regulation?</button><button type="button">Which breakthroughs matter?</button><button type="button">Recent funding rounds</button></div>
-            <div className="sampleReply"><span>AI</span><p>Today&apos;s strongest research theme is verifiable reasoning—labs are prioritising traceability alongside raw performance.</p></div>
-            <div className="askField"><input aria-label="Ask a question" placeholder="Ask a question…" /><button type="button" aria-label="Send question">↑</button></div>
-          </aside>
         </div>
       </div>
-
-      <footer className="trustStrip"><p><strong>Illustrative trust metrics</strong><span>40 claims checked</span><span>38 sourced</span><span className="pending">2 pending</span></p><a href="#method">How this works →</a></footer>
     </main>
   );
 }
