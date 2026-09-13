@@ -65,6 +65,7 @@ export default function App({
   const [digestPages, setDigestPages] = useState<PageCache<DigestSummary>>(new Map());
   const [digestCurrentPage, setDigestCurrentPage] = useState(FIRST_PAGE);
   const [digestsInitialLoading, setDigestsInitialLoading] = useState(true);
+  const [digestsSlowLoading, setDigestsSlowLoading] = useState(false);
   const [digestsLoadingMore, setDigestsLoadingMore] = useState(false);
   const [digestsError, setDigestsError] = useState<string | null>(null);
   const [digestRequestVersion, setDigestRequestVersion] = useState(0);
@@ -100,6 +101,7 @@ export default function App({
 
   const retryInitialDigests = useCallback(() => {
     setDigestsInitialLoading(true);
+    setDigestsSlowLoading(false);
     setDigestsError(null);
     setDigestRequestVersion((version) => version + 1);
   }, []);
@@ -114,6 +116,10 @@ export default function App({
 
   useEffect(() => {
     const controller = new AbortController();
+    setDigestsSlowLoading(false);
+    const slowTimer = setTimeout(() => {
+      setDigestsSlowLoading(true);
+    }, 8000);
     const { date_from, date_to } = getPeriodDateRange(digestPeriod);
     void fetchDigestsPage({
       apiBaseUrl: publicConfig.apiBaseUrl,
@@ -133,9 +139,14 @@ export default function App({
         : "The digest service could not be reached.";
       setDigestsError(message);
     }).finally(() => {
-      if (!controller.signal.aborted) setDigestsInitialLoading(false);
+      clearTimeout(slowTimer);
+      if (!controller.signal.aborted) {
+        setDigestsInitialLoading(false);
+        setDigestsSlowLoading(false);
+      }
     });
     return () => {
+      clearTimeout(slowTimer);
       controller.abort();
       digestLoadMoreController.current?.abort();
     };
@@ -340,6 +351,7 @@ export default function App({
               setDigestDetailError(null);
               setDigestDetailLoading(false);
               setDigestsInitialLoading(true);
+              setDigestsSlowLoading(false);
               setDigestsError(null);
             }}
           >
@@ -369,6 +381,7 @@ export default function App({
             <DigestFeed
               digests={digests}
               initialLoading={digestsInitialLoading}
+              slowLoading={digestsSlowLoading}
               loadingMore={digestsLoadingMore}
               error={digestsError}
               currentPage={digestCurrentPage}

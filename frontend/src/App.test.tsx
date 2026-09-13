@@ -660,6 +660,59 @@ describe("AI Daily Digest shell", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("displays slow loading fallback message when initial digests fetch takes longer than 8 seconds", async () => {
+    vi.useFakeTimers();
+
+    let resolveDigestsPage!: (value: Response) => void;
+    const digestsPromise = new Promise<Response>((resolve) => {
+      resolveDigestsPage = resolve;
+    });
+
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") {
+        return digestsPromise;
+      }
+      return jsonResponse([], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+
+    // Immediately: loading message is shown, but slow loading fallback is NOT shown
+    expect(container.textContent).toContain("Loading published digests");
+    expect(container.textContent).not.toContain("This can take a little longer the first time");
+
+    // Advance timers by 7.9s (less than 8s)
+    await act(async () => {
+      vi.advanceTimersByTime(7900);
+    });
+    expect(container.textContent).not.toContain("This can take a little longer the first time");
+
+    // Advance past 8s threshold
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+    // Now the slow loading fallback message is visible alongside the loading state
+    expect(container.textContent).toContain("Loading published digests");
+    expect(container.textContent).toContain("This can take a little longer the first time — the server may be waking up.");
+
+    // Resolve the digests fetch
+    await act(async () => {
+      resolveDigestsPage(digestJsonResponse([firstDigest], null));
+    });
+
+    // Message disappears when resolved
+    await waitForText(container, firstDigest.title);
+    expect(container.textContent).toContain(firstDigest.title);
+    expect(container.textContent).not.toContain("This can take a little longer the first time");
+
+    await act(async () => root.unmount());
+  });
 });
 
 describe("getPeriodDateRange helper", () => {
