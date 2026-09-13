@@ -116,7 +116,6 @@ export default function App({
 
   useEffect(() => {
     const controller = new AbortController();
-    setDigestsSlowLoading(false);
     const slowTimer = setTimeout(() => {
       setDigestsSlowLoading(true);
     }, 8000);
