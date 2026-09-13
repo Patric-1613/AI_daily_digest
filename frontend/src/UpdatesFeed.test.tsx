@@ -18,7 +18,13 @@ const update: UpdateSummary = {
 };
 
 const handlers = { onRetry: vi.fn(), onGoToPage: vi.fn(), onPrevious: vi.fn(), onNext: vi.fn() };
-const pagerState = { currentPage: 1, highestCachedPage: 1, terminalPage: null, hasNext: false };
+const pagerState = {
+  currentPage: 1,
+  highestCachedPage: 1,
+  terminalPage: null,
+  hasNext: false,
+  selectedSourceId: null,
+};
 
 describe("UpdatesFeed states", () => {
   it("renders an accessible loading state", () => {
@@ -27,9 +33,38 @@ describe("UpdatesFeed states", () => {
     expect(html).toContain('aria-busy="true"');
   });
 
-  it("renders an empty state", () => {
+  it("renders a generic empty state when All sources is selected", () => {
     const html = renderToStaticMarkup(<UpdatesFeed updates={[]} initialLoading={false} loadingMore={false} error={null} {...pagerState} {...handlers} />);
     expect(html).toContain("No updates yet");
+    expect(html).toContain("The collector has not published any source updates.");
+  });
+
+  it("names the selected provider in a truthful empty state, without inventing content", () => {
+    const html = renderToStaticMarkup(<UpdatesFeed
+      updates={[]}
+      initialLoading={false}
+      loadingMore={false}
+      error={null}
+      {...pagerState}
+      selectedSourceId="openai_news"
+      {...handlers}
+    />);
+    expect(html).toContain("No OpenAI updates were found.");
+    expect(html).not.toContain("every day");
+    expect(html).not.toContain("updated daily");
+  });
+
+  it("names Anthropic in the empty state even though its result is empty", () => {
+    const html = renderToStaticMarkup(<UpdatesFeed
+      updates={[]}
+      initialLoading={false}
+      loadingMore={false}
+      error={null}
+      {...pagerState}
+      selectedSourceId="anthropic_news"
+      {...handlers}
+    />);
+    expect(html).toContain("No Anthropic updates were found.");
   });
 
   it("renders a retryable error without exposing response content", () => {
@@ -48,6 +83,7 @@ describe("UpdatesFeed states", () => {
       highestCachedPage={3}
       terminalPage={null}
       hasNext
+      selectedSourceId={null}
       {...handlers}
     />);
     expect(html).toContain("Example announcement");

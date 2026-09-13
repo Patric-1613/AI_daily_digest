@@ -35,6 +35,11 @@ export class UpdatesApiError extends Error {
 interface FetchUpdatesPageOptions {
   apiBaseUrl: string;
   cursor?: string | null;
+  /** Exact `sources.yaml` source id, e.g. "openai_news". `source_id`, not
+   * `publisher`, because LangChain and LangGraph are both published through
+   * PyPI and would not be distinguishable by publisher alone. `null` or
+   * omitted means "All sources" -- no `source_id` parameter is sent. */
+  sourceId?: string | null;
   signal?: AbortSignal;
   fetchImpl?: FetchUpdates;
 }
@@ -104,6 +109,7 @@ function parsePage(value: unknown): UpdatesPage {
 export async function fetchUpdatesPage({
   apiBaseUrl,
   cursor,
+  sourceId,
   signal,
   fetchImpl = fetch,
 }: FetchUpdatesPageOptions): Promise<UpdatesPage> {
@@ -118,6 +124,9 @@ export async function fetchUpdatesPage({
   url.searchParams.set("limit", "12");
   if (cursor) {
     url.searchParams.set("cursor", cursor);
+  }
+  if (sourceId) {
+    url.searchParams.set("source_id", sourceId);
   }
 
   let response: Response;

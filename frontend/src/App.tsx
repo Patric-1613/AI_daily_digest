@@ -13,6 +13,7 @@ import { UpdatesFeed } from "./UpdatesFeed";
 import { SubscribeForm } from "./Subscriptions";
 import { FIRST_PAGE, getKnownTerminalPage, hasNextFrom, maxKnownPage } from "./pagination";
 import type { PageCache } from "./pagination";
+import { SourceFilter } from "./SourceFilter";
 
 export type DigestPeriod = "all" | "today" | "yesterday" | "week" | "month" | "year";
 
@@ -78,6 +79,10 @@ export default function App({
   const digestDetailController = useRef<AbortController | null>(null);
   const [updatePages, setUpdatePages] = useState<PageCache<UpdateSummary>>(new Map());
   const [updateCurrentPage, setUpdateCurrentPage] = useState(FIRST_PAGE);
+  // The Latest-updates source_id filter (null = "All sources"). Deliberately
+  // separate from digestPeriod: it must only ever affect the updates feed
+  // below, never the Published editions feed or its own pagination/cache.
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,6 +187,7 @@ export default function App({
     const controller = new AbortController();
     void fetchUpdatesPage({
       apiBaseUrl: publicConfig.apiBaseUrl,
+      sourceId: selectedSourceId,
       signal: controller.signal,
     }).then((page) => {
       if (controller.signal.aborted) return;
@@ -202,7 +208,11 @@ export default function App({
       controller.abort();
       loadMoreController.current?.abort();
     };
-  }, [initialRequestVersion]);
+    // selectedSourceId changes reset the cache/page synchronously in
+    // selectSource() below, before this effect ever fetches the newly
+    // filtered source's page one -- the same pattern the digest period
+    // filter already uses.
+  }, [initialRequestVersion, selectedSourceId]);
 
   const goToNextUpdates = useCallback(async () => {
     if (loadingMore) return;
@@ -222,6 +232,7 @@ export default function App({
       const page = await fetchUpdatesPage({
         apiBaseUrl: publicConfig.apiBaseUrl,
         cursor,
+        sourceId: selectedSourceId,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -241,7 +252,7 @@ export default function App({
     } finally {
       if (!controller.signal.aborted) setLoadingMore(false);
     }
-  }, [loadingMore, updateCurrentPage, updatePages]);
+  }, [loadingMore, selectedSourceId, updateCurrentPage, updatePages]);
 
   const goToPreviousUpdates = useCallback(() => {
     setUpdateCurrentPage((page) => Math.max(FIRST_PAGE, page - 1));
@@ -250,6 +261,21 @@ export default function App({
   const goToUpdatesPage = useCallback((page: number) => {
     if (updatePages.has(page)) setUpdateCurrentPage(page);
   }, [updatePages]);
+
+  const selectSource = useCallback((sourceId: string | null) => {
+    // A genuine no-op (e.g. clicking "All sources" while it's already
+    // selected) must not clear the cache and re-show a loading state with
+    // nothing to end it -- the fetch effect below only re-runs when
+    // selectedSourceId's *value* actually changes.
+    if (sourceId === selectedSourceId) return;
+    loadMoreController.current?.abort();
+    setSelectedSourceId(sourceId);
+    setUpdatePages(new Map());
+    setUpdateCurrentPage(FIRST_PAGE);
+    setLoadingMore(false);
+    setError(null);
+    setInitialLoading(true);
+  }, [selectedSourceId]);
 
   const goToNextDigests = useCallback(async () => {
     if (digestsLoadingMore) return;
@@ -375,6 +401,8 @@ export default function App({
           </div>
         </section>
 
+        <SourceFilter selectedSourceId={selectedSourceId} onSelect={selectSource} />
+
         <div className="contentGrid">
           <div className="feedsColumn">
             <DigestFeed
@@ -408,6 +436,7 @@ export default function App({
               highestCachedPage={updatesHighestCachedPage}
               terminalPage={updatesTerminalPage}
               hasNext={updatesHasNext}
+              selectedSourceId={selectedSourceId}
               onRetry={() => void retryInitialUpdates()}
               onGoToPage={goToUpdatesPage}
               onPrevious={goToPreviousUpdates}
