@@ -1,18 +1,24 @@
 import { Fragment } from "react";
 import type { DigestDetail, DigestSummary } from "./api/digests";
+import { Pager } from "./Pager";
 
 interface DigestFeedProps {
   digests: readonly DigestSummary[];
   initialLoading: boolean;
   loadingMore: boolean;
   error: string | null;
-  nextCursor: string | null;
+  currentPage: number;
+  highestCachedPage: number;
+  terminalPage: number | null;
+  hasNext: boolean;
   selectedDigestId: string | null;
   detail: DigestDetail | null;
   detailLoading: boolean;
   detailError: string | null;
   onRetry: () => void;
-  onLoadMore: () => void;
+  onGoToPage: (page: number) => void;
+  onPrevious: () => void;
+  onNext: () => void;
   onSelectDigest: (digestId: string) => void;
   onCloseDetail: () => void;
   onRetryDetail: () => void;
@@ -42,13 +48,18 @@ export function DigestFeed({
   initialLoading,
   loadingMore,
   error,
-  nextCursor,
+  currentPage,
+  highestCachedPage,
+  terminalPage,
+  hasNext,
   selectedDigestId,
   detail,
   detailLoading,
   detailError,
   onRetry,
-  onLoadMore,
+  onGoToPage,
+  onPrevious,
+  onNext,
   onSelectDigest,
   onCloseDetail,
   onRetryDetail,
@@ -191,15 +202,21 @@ export function DigestFeed({
 
       {error && digests.length > 0 ? (
         <div className="inlineError" role="alert">
-          <span>{error}</span><button type="button" onClick={onLoadMore}>Try again</button>
+          <span>{error}</span><button type="button" onClick={onNext}>Try again</button>
         </div>
       ) : null}
 
-      {nextCursor && !error ? (
-        <button className="loadMoreButton" type="button" onClick={onLoadMore} disabled={loadingMore}>
-          {loadingMore ? "Loading more…" : "Load more digests"}
-        </button>
-      ) : null}
+      <Pager
+        ariaLabel="Digest pagination"
+        currentPage={currentPage}
+        highestCachedPage={highestCachedPage}
+        terminalPage={terminalPage}
+        hasNext={hasNext}
+        nextPending={loadingMore}
+        onGoToPage={onGoToPage}
+        onPrevious={onPrevious}
+        onNext={onNext}
+      />
     </section>
   );
 }

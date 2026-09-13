@@ -1,14 +1,20 @@
 import type { UpdateSummary } from "./api/updates";
 import { safeSourceUrl } from "./api/updates";
+import { Pager } from "./Pager";
 
 interface UpdatesFeedProps {
   updates: readonly UpdateSummary[];
   initialLoading: boolean;
   loadingMore: boolean;
   error: string | null;
-  nextCursor: string | null;
+  currentPage: number;
+  highestCachedPage: number;
+  terminalPage: number | null;
+  hasNext: boolean;
   onRetry: () => void;
-  onLoadMore: () => void;
+  onGoToPage: (page: number) => void;
+  onPrevious: () => void;
+  onNext: () => void;
 }
 
 const dateFormatter = new Intl.DateTimeFormat("en-GB", {
@@ -31,9 +37,14 @@ export function UpdatesFeed({
   initialLoading,
   loadingMore,
   error,
-  nextCursor,
+  currentPage,
+  highestCachedPage,
+  terminalPage,
+  hasNext,
   onRetry,
-  onLoadMore,
+  onGoToPage,
+  onPrevious,
+  onNext,
 }: UpdatesFeedProps) {
   return (
     <section className="feed" aria-labelledby="updates-heading" aria-busy={initialLoading || loadingMore}>
@@ -98,15 +109,21 @@ export function UpdatesFeed({
 
       {error && updates.length > 0 ? (
         <div className="inlineError" role="alert">
-          <span>{error}</span><button type="button" onClick={onLoadMore}>Try again</button>
+          <span>{error}</span><button type="button" onClick={onNext}>Try again</button>
         </div>
       ) : null}
 
-      {nextCursor && !error ? (
-        <button className="loadMoreButton" type="button" onClick={onLoadMore} disabled={loadingMore}>
-          {loadingMore ? "Loading more…" : "Load more updates"}
-        </button>
-      ) : null}
+      <Pager
+        ariaLabel="Updates pagination"
+        currentPage={currentPage}
+        highestCachedPage={highestCachedPage}
+        terminalPage={terminalPage}
+        hasNext={hasNext}
+        nextPending={loadingMore}
+        onGoToPage={onGoToPage}
+        onPrevious={onPrevious}
+        onNext={onNext}
+      />
     </section>
   );
 }

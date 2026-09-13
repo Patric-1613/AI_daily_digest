@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { StrictMode, act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -94,6 +94,24 @@ function buttonWithLabel(container: HTMLElement, label: string): HTMLButtonEleme
   return button;
 }
 
+function scopedButtonWithLabel(scope: Element, label: string): HTMLButtonElement {
+  const button = scope.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  if (!button) throw new Error(`Button not found within scope: ${label}`);
+  return button;
+}
+
+function updatesFeed(container: HTMLElement): HTMLElement {
+  const section = container.querySelector<HTMLElement>("section.feed");
+  if (!section) throw new Error("Updates feed section not found");
+  return section;
+}
+
+function digestFeed(container: HTMLElement): HTMLElement {
+  const section = container.querySelector<HTMLElement>("section.digestFeed");
+  if (!section) throw new Error("Digest feed section not found");
+  return section;
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -138,15 +156,14 @@ describe("AI Daily Digest shell", () => {
     expect(html).not.toContain("How this works");
   });
 
-  it("runs initial failure, abort-aware retry, and cursor load more through the mounted App", async () => {
+  it("shows page 1 initially, fetches page 2 via next_cursor, and highlights the current page", async () => {
     const updateResponses = [
-      new Response(null, { status: 503 }),
       jsonResponse([firstUpdate], "opaque-cursor"),
-      jsonResponse([secondUpdate], null),
+      jsonResponse([secondUpdate], "second-cursor"),
     ];
     const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
       const url = new URL(String(input));
-      if (url.pathname === "/v1/digests") return digestJsonResponse([firstDigest], null);
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
       const response = updateResponses.shift();
       if (!response) throw new Error("Unexpected extra fetch");
       return response;
@@ -158,27 +175,219 @@ describe("AI Daily Digest shell", () => {
     const root = createRoot(container);
     await act(async () => root.render(<App />));
 
-    await waitForText(container, "Updates are temporarily unavailable");
-    const initialUpdateCall = vi.mocked(fetchMock).mock.calls.find(([input]) => (
-      new URL(String(input)).pathname === "/v1/updates"
-    ));
-    const initialSignal = initialUpdateCall?.[1]?.signal;
-
-    await act(async () => buttonWithText(container, "Try again").click());
     await waitForText(container, "First source update");
-    expect(initialSignal?.aborted).toBe(true);
+    const feed = updatesFeed(container);
+    expect(feed.querySelector('button[aria-label="Go to page 1"][aria-current="page"]')).toBeTruthy();
+    expect(feed.querySelector('article.articleCard')).toBeTruthy();
+    expect(feed.querySelectorAll('article.articleCard')).toHaveLength(1);
 
-    await act(async () => buttonWithText(container, "Load more updates").click());
+    await act(async () => scopedButtonWithLabel(feed, "Next page").click());
     await waitForText(container, "Second source update");
 
-    expect(container.textContent).toContain("AI Daily Digest — 7 September 2026");
-    expect(container.querySelectorAll("article.articleCard")).toHaveLength(2);
+    expect(container.textContent).not.toContain("First source update");
+    expect(feed.querySelector('button[aria-label="Go to page 2"][aria-current="page"]')).toBeTruthy();
     const updateCalls = vi.mocked(fetchMock).mock.calls.filter(([input]) => (
       new URL(String(input)).pathname === "/v1/updates"
     ));
-    expect(updateCalls).toHaveLength(3);
-    const loadMoreUrl = new URL(String(updateCalls[2]?.[0]));
-    expect(loadMoreUrl.searchParams.get("cursor")).toBe("opaque-cursor");
+    expect(updateCalls).toHaveLength(2);
+    const secondCallUrl = new URL(String(updateCalls[1]?.[0]));
+    expect(secondCallUrl.searchParams.get("cursor")).toBe("opaque-cursor");
+
+    await act(async () => root.unmount());
+  });
+
+  it("navigates to the correct page exactly once under StrictMode's double-invoked state updaters", async () => {
+    // React (Strict Mode) intentionally double-invokes effects and state
+    // updater functions to surface impurity, so responses are keyed by the
+    // request's own cursor (deterministic given the input) rather than call
+    // order -- a shift()-based queue would be consumed twice by the extra
+    // mount/fetch StrictMode performs and would not exercise the real thing
+    // under test. goToDigestsPage/goToUpdatesPage read the page cache from
+    // the closure and call only the plain current-page setter -- no nested
+    // setter-inside-setter -- so a double invocation must still land on
+    // exactly page 2, not skip ahead or throw.
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      const cursor = url.searchParams.get("cursor");
+      if (cursor === "opaque-cursor") return jsonResponse([secondUpdate], null);
+      return jsonResponse([firstUpdate], "opaque-cursor");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<StrictMode><App /></StrictMode>));
+    await waitForText(container, "First source update");
+
+    const feed = updatesFeed(container);
+    await act(async () => scopedButtonWithLabel(feed, "Next page").click());
+    await waitForText(container, "Second source update");
+
+    // Exactly page 2 is current -- no skip to a further page under the
+    // double-invoked updater, and the stale first source update is gone.
+    expect(feed.querySelector('button[aria-label="Go to page 2"][aria-current="page"]')).toBeTruthy();
+    expect(feed.querySelector('button[aria-label="Go to page 3"]')).toBeNull();
+    expect(container.textContent).not.toContain("First source update");
+
+    // Clicking the cached page-1 number lands on exactly page 1 -- not page 0,
+    // not left on page 2 -- proving goToUpdatesPage's own setter call is pure.
+    await act(async () => scopedButtonWithLabel(feed, "Go to page 1").click());
+    await waitForText(container, "First source update");
+    expect(feed.querySelector('button[aria-label="Go to page 1"][aria-current="page"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Second source update");
+
+    await act(async () => root.unmount());
+  });
+
+  it("navigates back to a cached page with Previous without making another request", async () => {
+    const updateResponses = [
+      jsonResponse([firstUpdate], "opaque-cursor"),
+      jsonResponse([secondUpdate], null),
+    ];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      const response = updateResponses.shift();
+      if (!response) throw new Error("Unexpected extra fetch");
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "First source update");
+
+    const feed = updatesFeed(container);
+    await act(async () => scopedButtonWithLabel(feed, "Next page").click());
+    await waitForText(container, "Second source update");
+
+    const callsAfterNext = vi.mocked(fetchMock).mock.calls.filter(([input]) => (
+      new URL(String(input)).pathname === "/v1/updates"
+    )).length;
+
+    await act(async () => scopedButtonWithLabel(feed, "Previous page").click());
+    await waitForText(container, "First source update");
+    expect(container.textContent).not.toContain("Second source update");
+    expect(feed.querySelector('button[aria-label="Go to page 1"][aria-current="page"]')).toBeTruthy();
+
+    const callsAfterPrevious = vi.mocked(fetchMock).mock.calls.filter(([input]) => (
+      new URL(String(input)).pathname === "/v1/updates"
+    )).length;
+    expect(callsAfterPrevious).toBe(callsAfterNext);
+
+    await act(async () => root.unmount());
+  });
+
+  it("disables Next once a fetched page returns next_cursor=null (terminal page)", async () => {
+    const updateResponses = [jsonResponse([firstUpdate], null)];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      const response = updateResponses.shift();
+      if (!response) throw new Error("Unexpected extra fetch");
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "First source update");
+
+    // A single terminal page (next_cursor null, only one known page) renders no pager at all.
+    expect(updatesFeed(container).querySelector("nav.pager")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("preserves the current page and cached items when a next-page request fails", async () => {
+    const updateResponses = [
+      jsonResponse([firstUpdate], "opaque-cursor"),
+      new Response(null, { status: 503 }),
+      jsonResponse([secondUpdate], null),
+    ];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      const response = updateResponses.shift();
+      if (!response) throw new Error("Unexpected extra fetch");
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "First source update");
+
+    const feed = updatesFeed(container);
+    await act(async () => scopedButtonWithLabel(feed, "Next page").click());
+    await waitForText(container, "returned an error");
+
+    // Current page indicator and cached page-1 content are unchanged after the failure.
+    expect(feed.querySelector('button[aria-label="Go to page 1"][aria-current="page"]')).toBeTruthy();
+    expect(container.textContent).toContain("First source update");
+    expect(container.textContent).not.toContain("Second source update");
+
+    // Retrying the same failed next-page request (via the inline error's retry button) succeeds.
+    await act(async () => buttonWithText(feed, "Try again").click());
+    await waitForText(container, "Second source update");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps digest and updates pagination independent of each other", async () => {
+    const secondPageDigest: DigestSummary = {
+      ...firstDigest,
+      id: "01a034ed-e100-7e73-ab06-1fecafdc495f",
+      title: "AI Daily Digest — page two edition",
+    };
+    const updateResponses = [
+      jsonResponse([firstUpdate], "u-cursor-1"),
+      jsonResponse([secondUpdate], null),
+    ];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") {
+        const cursor = url.searchParams.get("cursor");
+        if (cursor === "d-cursor-1") return digestJsonResponse([secondPageDigest], null);
+        return digestJsonResponse([firstDigest], "d-cursor-1");
+      }
+      const response = updateResponses.shift();
+      if (!response) throw new Error("Unexpected extra fetch");
+      return response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, firstDigest.title);
+    await waitForText(container, "First source update");
+
+    // Advance only the digest feed to page 2.
+    await act(async () => scopedButtonWithLabel(digestFeed(container), "Next page").click());
+    await waitForText(container, secondPageDigest.title);
+
+    // Updates feed must still be on page 1, unaffected.
+    const updatesSection = updatesFeed(container);
+    expect(updatesSection.textContent).toContain("First source update");
+    expect(updatesSection.querySelector('button[aria-label="Go to page 1"][aria-current="page"]')).toBeTruthy();
+
+    // Now advance only the updates feed to page 2.
+    await act(async () => scopedButtonWithLabel(updatesSection, "Next page").click());
+    await waitForText(container, "Second source update");
+
+    // Digest feed must still show its own page 2, unaffected by the updates navigation.
+    expect(container.textContent).toContain(secondPageDigest.title);
+    expect(digestFeed(container).querySelector('button[aria-label="Go to page 2"][aria-current="page"]')).toBeTruthy();
 
     await act(async () => root.unmount());
   });
@@ -318,7 +527,7 @@ describe("AI Daily Digest shell", () => {
     await act(async () => root.unmount());
   });
 
-  it("resets cursor, closes open detail, and never sends stale cursor when period changes", async () => {
+  it("resets digest pagination to page 1, clears the cache, closes open detail, and never sends a stale cursor when period changes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-12T12:00:00Z"));
 
@@ -360,8 +569,9 @@ describe("AI Daily Digest shell", () => {
     await act(async () => root.render(<App />));
     await waitForText(container, firstDigest.title);
 
-    // Initial page has cursor -> load more button is present
-    expect(buttonWithText(container, "Load more digests")).toBeTruthy();
+    // Initial page has a cursor -> the pager's Next control is present and enabled.
+    const feed = digestFeed(container);
+    expect(scopedButtonWithLabel(feed, "Next page").disabled).toBe(false);
 
     // Open detail for firstDigest
     await act(async () => buttonWithLabel(
@@ -388,8 +598,8 @@ describe("AI Daily Digest shell", () => {
     expect(container.textContent).not.toContain(firstDigest.title);
     expect(container.textContent).toContain("Loading published digests");
 
-    // 2. Proves old load-more button is immediately absent/non-actionable
-    expect(container.querySelector("button.loadMoreButton")).toBeNull();
+    // 2. Proves the old pager (with its cached cursor state) is immediately gone
+    expect(digestFeed(container).querySelector("nav.pager")).toBeNull();
 
     // 3. Proves filtered query was dispatched without any stale cursor
     const filteredCall = requestedDigestUrls.find((call) => call.includes("date_from")) ?? "";
@@ -405,7 +615,48 @@ describe("AI Daily Digest shell", () => {
     // Wait for filtered digest to appear
     await waitForText(container, secondDigest.title);
     expect(container.textContent).toContain(secondDigest.title);
-    expect(container.querySelector("button.loadMoreButton")).toBeNull();
+    // Single terminal page after reset -> no pager rendered.
+    expect(digestFeed(container).querySelector("nav.pager")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("closes an open digest detail when navigating to a different digest page", async () => {
+    const secondPageDigest: DigestSummary = {
+      ...firstDigest,
+      id: "01a034ed-e100-7e73-ab06-1fecafdc495f",
+      title: "AI Daily Digest — page two edition",
+    };
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") {
+        const cursor = url.searchParams.get("cursor");
+        if (cursor === "d-cursor-1") return digestJsonResponse([secondPageDigest], null);
+        return digestJsonResponse([firstDigest], "d-cursor-1");
+      }
+      if (url.pathname === `/v1/digests/${firstDigest.id}`) {
+        return new Response(JSON.stringify(digestDetail(firstDigest, "Page one claim detail")), {
+          status: 200,
+        });
+      }
+      return jsonResponse([], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, firstDigest.title);
+
+    await act(async () => buttonWithLabel(container, `View details for ${firstDigest.title}`).click());
+    await waitForText(container, "Page one claim detail");
+
+    await act(async () => scopedButtonWithLabel(digestFeed(container), "Next page").click());
+    await waitForText(container, secondPageDigest.title);
+
+    expect(container.textContent).not.toContain("Page one claim detail");
+    expect(container.querySelector(".digestDetailPanel")).toBeNull();
 
     await act(async () => root.unmount());
   });

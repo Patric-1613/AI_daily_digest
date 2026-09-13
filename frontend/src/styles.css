@@ -117,9 +117,15 @@ input::placeholder { color: #77739b; }
 .feedStateError { justify-content: space-between; border-color: rgba(245, 128, 37, .5); }
 .loadingMark { width: 24px; height: 24px; flex: 0 0 24px; border: 2px solid var(--border); border-top-color: var(--cyan); border-radius: 50%; animation: spin 900ms linear infinite; }
 .inlineError { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; padding: 13px 15px; border: 1px solid rgba(245, 128, 37, .45); border-radius: 11px; color: #ffd4b4; font-size: .72rem; }
-.loadMoreButton { display: block; min-height: 45px; margin: 18px auto 0; padding: 0 19px; border: 1px solid var(--violet); border-radius: 11px; background: rgba(123, 92, 255, .14); color: white; font-size: .75rem; font-weight: 800; transition: transform 160ms ease, background 160ms ease; }
-.loadMoreButton:hover:not(:disabled), .loadMoreButton:focus-visible { outline: none; background: rgba(123, 92, 255, .28); transform: translateY(-2px); }
-.loadMoreButton:disabled { cursor: progress; opacity: .65; }
+.pager { margin-top: 18px; }
+.pagerList { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 0; margin: 0; list-style: none; }
+.pagerEllipsis { padding: 0 4px; color: var(--muted); font-size: .8rem; font-weight: 700; }
+.pagerButton { min-width: 40px; min-height: 40px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: rgba(18, 16, 42, .86); color: white; font-size: .78rem; font-weight: 700; transition: border-color 160ms ease, background 160ms ease; }
+.pagerButton.pagerEdge { padding: 0 16px; font-weight: 800; }
+.pagerButton:hover:not(:disabled) { border-color: var(--violet); background: rgba(123, 92, 255, .18); }
+.pagerButton[aria-current="page"] { border-color: var(--cyan); background: rgba(0, 217, 232, .16); color: var(--cyan); }
+.pagerButton:disabled { cursor: not-allowed; opacity: .45; }
+.pagerButton:focus-visible { outline: 3px solid rgba(0, 217, 232, .9); outline-offset: 2px; border-color: var(--cyan); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -144,6 +150,8 @@ input::placeholder { color: #77739b; }
   .digestDetailHeader, .detailStateError { align-items: stretch; flex-direction: column; }
   .digestDetailHeader button, .detailState button { width: 100%; }
   .articleCard { min-height: 0; grid-template-columns: 1fr; padding: 23px; }
+  .pagerButton { min-width: 36px; min-height: 36px; padding: 0 9px; font-size: .72rem; }
+  .pagerButton.pagerEdge { padding: 0 11px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

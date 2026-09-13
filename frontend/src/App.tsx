@@ -4,14 +4,15 @@ import {
   DigestsApiError,
   fetchDigestDetail,
   fetchDigestsPage,
-  mergeDigests,
 } from "./api/digests";
 import type { DigestDetail, DigestSummary } from "./api/digests";
-import { fetchUpdatesPage, mergeUpdates, UpdatesApiError } from "./api/updates";
+import { fetchUpdatesPage, UpdatesApiError } from "./api/updates";
 import type { UpdateSummary } from "./api/updates";
 import { publicConfig } from "./config";
 import { UpdatesFeed } from "./UpdatesFeed";
 import { SubscribeForm } from "./Subscriptions";
+import { FIRST_PAGE, getKnownTerminalPage, hasNextFrom, maxKnownPage } from "./pagination";
+import type { PageCache } from "./pagination";
 
 export type DigestPeriod = "all" | "today" | "yesterday" | "week" | "month" | "year";
 
@@ -61,8 +62,8 @@ export default function App({
   subscriptionsEnabled = publicConfig.subscriptionsEnabled,
 }: AppProps) {
   const [digestPeriod, setDigestPeriod] = useState<DigestPeriod>("all");
-  const [digests, setDigests] = useState<DigestSummary[]>([]);
-  const [digestNextCursor, setDigestNextCursor] = useState<string | null>(null);
+  const [digestPages, setDigestPages] = useState<PageCache<DigestSummary>>(new Map());
+  const [digestCurrentPage, setDigestCurrentPage] = useState(FIRST_PAGE);
   const [digestsInitialLoading, setDigestsInitialLoading] = useState(true);
   const [digestsLoadingMore, setDigestsLoadingMore] = useState(false);
   const [digestsError, setDigestsError] = useState<string | null>(null);
@@ -74,13 +75,22 @@ export default function App({
   const [digestDetailError, setDigestDetailError] = useState<string | null>(null);
   const [digestDetailRequestVersion, setDigestDetailRequestVersion] = useState(0);
   const digestDetailController = useRef<AbortController | null>(null);
-  const [updates, setUpdates] = useState<UpdateSummary[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [updatePages, setUpdatePages] = useState<PageCache<UpdateSummary>>(new Map());
+  const [updateCurrentPage, setUpdateCurrentPage] = useState(FIRST_PAGE);
   const [initialLoading, setInitialLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initialRequestVersion, setInitialRequestVersion] = useState(0);
   const loadMoreController = useRef<AbortController | null>(null);
+
+  const digests = digestPages.get(digestCurrentPage)?.items ?? [];
+  const digestHasNext = hasNextFrom(digestPages, digestCurrentPage);
+  const digestHighestCachedPage = maxKnownPage(digestPages);
+  const digestTerminalPage = getKnownTerminalPage(digestPages);
+  const updates = updatePages.get(updateCurrentPage)?.items ?? [];
+  const updatesHasNext = hasNextFrom(updatePages, updateCurrentPage);
+  const updatesHighestCachedPage = maxKnownPage(updatePages);
+  const updatesTerminalPage = getKnownTerminalPage(updatePages);
 
   const retryInitialUpdates = useCallback(() => {
     setInitialLoading(true);
@@ -94,6 +104,14 @@ export default function App({
     setDigestRequestVersion((version) => version + 1);
   }, []);
 
+  const closeDigestDetail = useCallback(() => {
+    digestDetailController.current?.abort();
+    setSelectedDigestId(null);
+    setDigestDetail(null);
+    setDigestDetailError(null);
+    setDigestDetailLoading(false);
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     const { date_from, date_to } = getPeriodDateRange(digestPeriod);
@@ -104,8 +122,8 @@ export default function App({
       signal: controller.signal,
     }).then((page) => {
       if (controller.signal.aborted) return;
-      setDigests(page.items);
-      setDigestNextCursor(page.next_cursor);
+      setDigestPages(new Map([[FIRST_PAGE, { items: page.items, nextCursor: page.next_cursor }]]));
+      setDigestCurrentPage(FIRST_PAGE);
       setDigestsError(null);
     }).catch((loadError: unknown) => {
       if (controller.signal.aborted) return;
@@ -121,6 +139,8 @@ export default function App({
       controller.abort();
       digestLoadMoreController.current?.abort();
     };
+    // digestRequestVersion is a manual retry trigger; digestPeriod changes reset the cache
+    // synchronously below, before this effect ever fetches the filtered period's page one.
   }, [digestPeriod, digestRequestVersion]);
 
   useEffect(() => {
@@ -155,8 +175,8 @@ export default function App({
       signal: controller.signal,
     }).then((page) => {
       if (controller.signal.aborted) return;
-      setUpdates(page.items);
-      setNextCursor(page.next_cursor);
+      setUpdatePages(new Map([[FIRST_PAGE, { items: page.items, nextCursor: page.next_cursor }]]));
+      setUpdateCurrentPage(FIRST_PAGE);
       setError(null);
     }).catch((loadError: unknown) => {
       if (controller.signal.aborted) return;
@@ -174,8 +194,15 @@ export default function App({
     };
   }, [initialRequestVersion]);
 
-  const loadMoreUpdates = useCallback(async () => {
-    if (!nextCursor || loadingMore) return;
+  const goToNextUpdates = useCallback(async () => {
+    if (loadingMore) return;
+    const targetPage = updateCurrentPage + 1;
+    if (updatePages.has(targetPage)) {
+      setUpdateCurrentPage(targetPage);
+      return;
+    }
+    const cursor = updatePages.get(updateCurrentPage)?.nextCursor ?? null;
+    if (!cursor) return;
     loadMoreController.current?.abort();
     const controller = new AbortController();
     loadMoreController.current = controller;
@@ -184,12 +211,16 @@ export default function App({
     try {
       const page = await fetchUpdatesPage({
         apiBaseUrl: publicConfig.apiBaseUrl,
-        cursor: nextCursor,
+        cursor,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
-      setUpdates((current) => mergeUpdates(current, page.items));
-      setNextCursor(page.next_cursor);
+      setUpdatePages((current) => {
+        const next = new Map(current);
+        next.set(targetPage, { items: page.items, nextCursor: page.next_cursor });
+        return next;
+      });
+      setUpdateCurrentPage(targetPage);
     } catch (loadError) {
       if (controller.signal.aborted) return;
       if (loadError instanceof DOMException && loadError.name === "AbortError") return;
@@ -200,10 +231,26 @@ export default function App({
     } finally {
       if (!controller.signal.aborted) setLoadingMore(false);
     }
-  }, [loadingMore, nextCursor]);
+  }, [loadingMore, updateCurrentPage, updatePages]);
 
-  const loadMoreDigests = useCallback(async () => {
-    if (!digestNextCursor || digestsLoadingMore) return;
+  const goToPreviousUpdates = useCallback(() => {
+    setUpdateCurrentPage((page) => Math.max(FIRST_PAGE, page - 1));
+  }, []);
+
+  const goToUpdatesPage = useCallback((page: number) => {
+    if (updatePages.has(page)) setUpdateCurrentPage(page);
+  }, [updatePages]);
+
+  const goToNextDigests = useCallback(async () => {
+    if (digestsLoadingMore) return;
+    const targetPage = digestCurrentPage + 1;
+    closeDigestDetail();
+    if (digestPages.has(targetPage)) {
+      setDigestCurrentPage(targetPage);
+      return;
+    }
+    const cursor = digestPages.get(digestCurrentPage)?.nextCursor ?? null;
+    if (!cursor) return;
     digestLoadMoreController.current?.abort();
     const controller = new AbortController();
     digestLoadMoreController.current = controller;
@@ -213,14 +260,18 @@ export default function App({
     try {
       const page = await fetchDigestsPage({
         apiBaseUrl: publicConfig.apiBaseUrl,
-        cursor: digestNextCursor,
+        cursor,
         date_from,
         date_to,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
-      setDigests((current) => mergeDigests(current, page.items));
-      setDigestNextCursor(page.next_cursor);
+      setDigestPages((current) => {
+        const next = new Map(current);
+        next.set(targetPage, { items: page.items, nextCursor: page.next_cursor });
+        return next;
+      });
+      setDigestCurrentPage(targetPage);
     } catch (loadError) {
       if (controller.signal.aborted) return;
       if (loadError instanceof DOMException && loadError.name === "AbortError") return;
@@ -231,7 +282,17 @@ export default function App({
     } finally {
       if (!controller.signal.aborted) setDigestsLoadingMore(false);
     }
-  }, [digestNextCursor, digestPeriod, digestsLoadingMore]);
+  }, [closeDigestDetail, digestCurrentPage, digestPages, digestPeriod, digestsLoadingMore]);
+
+  const goToPreviousDigests = useCallback(() => {
+    closeDigestDetail();
+    setDigestCurrentPage((page) => Math.max(FIRST_PAGE, page - 1));
+  }, [closeDigestDetail]);
+
+  const goToDigestsPage = useCallback((page: number) => {
+    closeDigestDetail();
+    if (digestPages.has(page)) setDigestCurrentPage(page);
+  }, [closeDigestDetail, digestPages]);
 
   const selectDigest = useCallback((digestId: string) => {
     digestDetailController.current?.abort();
@@ -247,14 +308,6 @@ export default function App({
     setDigestDetailError(null);
     setDigestDetailLoading(true);
   }, [selectedDigestId]);
-
-  const closeDigestDetail = useCallback(() => {
-    digestDetailController.current?.abort();
-    setSelectedDigestId(null);
-    setDigestDetail(null);
-    setDigestDetailError(null);
-    setDigestDetailLoading(false);
-  }, []);
 
   const retryDigestDetail = useCallback(() => {
     digestDetailController.current?.abort();
@@ -279,8 +332,8 @@ export default function App({
               digestLoadMoreController.current?.abort();
               digestDetailController.current?.abort();
               setDigestPeriod(newPeriod);
-              setDigests([]);
-              setDigestNextCursor(null);
+              setDigestPages(new Map());
+              setDigestCurrentPage(FIRST_PAGE);
               setDigestsLoadingMore(false);
               setSelectedDigestId(null);
               setDigestDetail(null);
@@ -318,13 +371,18 @@ export default function App({
               initialLoading={digestsInitialLoading}
               loadingMore={digestsLoadingMore}
               error={digestsError}
-              nextCursor={digestNextCursor}
+              currentPage={digestCurrentPage}
+              highestCachedPage={digestHighestCachedPage}
+              terminalPage={digestTerminalPage}
+              hasNext={digestHasNext}
               selectedDigestId={selectedDigestId}
               detail={digestDetail}
               detailLoading={digestDetailLoading}
               detailError={digestDetailError}
               onRetry={() => void retryInitialDigests()}
-              onLoadMore={() => void loadMoreDigests()}
+              onGoToPage={goToDigestsPage}
+              onPrevious={goToPreviousDigests}
+              onNext={() => void goToNextDigests()}
               onSelectDigest={selectDigest}
               onCloseDetail={closeDigestDetail}
               onRetryDetail={retryDigestDetail}
@@ -334,9 +392,14 @@ export default function App({
               initialLoading={initialLoading}
               loadingMore={loadingMore}
               error={error}
-              nextCursor={nextCursor}
+              currentPage={updateCurrentPage}
+              highestCachedPage={updatesHighestCachedPage}
+              terminalPage={updatesTerminalPage}
+              hasNext={updatesHasNext}
               onRetry={() => void retryInitialUpdates()}
-              onLoadMore={() => void loadMoreUpdates()}
+              onGoToPage={goToUpdatesPage}
+              onPrevious={goToPreviousUpdates}
+              onNext={() => void goToNextUpdates()}
             />
           </div>
 
