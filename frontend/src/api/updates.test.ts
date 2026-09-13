@@ -62,6 +62,45 @@ describe("updates API client", () => {
     expect(requestedUrl.searchParams.get("cursor")).toBe("payload.signature");
   });
 
+  it("sends source_id when a provider filter is requested", async () => {
+    const requestedUrls: string[] = [];
+    const fetchMock: FetchUpdates = vi.fn(async (input) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({ items: [], next_cursor: null }), { status: 200 });
+    });
+
+    await fetchUpdatesPage({
+      apiBaseUrl: "https://api.example.com",
+      sourceId: "openai_news",
+      fetchImpl: fetchMock,
+    });
+
+    const requestedUrl = new URL(requestedUrls[0] ?? "");
+    expect(requestedUrl.searchParams.get("source_id")).toBe("openai_news");
+  });
+
+  it("omits source_id entirely for All sources (sourceId null or omitted)", async () => {
+    const requestedUrls: string[] = [];
+    const fetchMock: FetchUpdates = vi.fn(async (input) => {
+      requestedUrls.push(String(input));
+      return new Response(JSON.stringify({ items: [], next_cursor: null }), { status: 200 });
+    });
+
+    await fetchUpdatesPage({
+      apiBaseUrl: "https://api.example.com",
+      sourceId: null,
+      fetchImpl: fetchMock,
+    });
+    await fetchUpdatesPage({
+      apiBaseUrl: "https://api.example.com",
+      fetchImpl: fetchMock,
+    });
+
+    for (const rawUrl of requestedUrls) {
+      expect(new URL(rawUrl).searchParams.has("source_id")).toBe(false);
+    }
+  });
+
   it("rejects malformed success payloads at the network boundary", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       items: [{ title: "Missing required fields" }],

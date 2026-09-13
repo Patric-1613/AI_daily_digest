@@ -106,6 +106,12 @@ function updatesFeed(container: HTMLElement): HTMLElement {
   return section;
 }
 
+function sourceFilterSection(container: HTMLElement): HTMLElement {
+  const section = container.querySelector<HTMLElement>("section.sourceFilter");
+  if (!section) throw new Error("Source filter section not found");
+  return section;
+}
+
 function digestFeed(container: HTMLElement): HTMLElement {
   const section = container.querySelector<HTMLElement>("section.digestFeed");
   if (!section) throw new Error("Digest feed section not found");
@@ -388,6 +394,296 @@ describe("AI Daily Digest shell", () => {
     // Digest feed must still show its own page 2, unaffected by the updates navigation.
     expect(container.textContent).toContain(secondPageDigest.title);
     expect(digestFeed(container).querySelector('button[aria-label="Go to page 2"][aria-current="page"]')).toBeTruthy();
+
+    await act(async () => root.unmount());
+  });
+
+  it("selecting OpenAI resets the updates feed to page 1 and fetches OpenAI updates only", async () => {
+    const anthropicUpdate: UpdateSummary = {
+      ...firstUpdate,
+      id: "01a032cd-23e0-7cf2-83e9-6d6f9f9326f5",
+      source_id: "anthropic_news",
+      publisher: "Anthropic",
+      title: "Anthropic-only update",
+    };
+    const requestedUpdateUrls: string[] = [];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([firstDigest], null);
+      requestedUpdateUrls.push(url.href);
+      if (url.searchParams.get("source_id") === "openai_news") {
+        // A non-null next_cursor here only so the numbered pager renders and
+        // "page 1, current" can be asserted directly -- it is never followed.
+        return jsonResponse([firstUpdate], "openai-cursor-1");
+      }
+      return jsonResponse([anthropicUpdate], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "Anthropic-only update");
+
+    await act(async () => buttonWithText(sourceFilterSection(container), "OpenAI").click());
+    await waitForText(container, "First source update");
+    expect(container.textContent).not.toContain("Anthropic-only update");
+
+    const lastRequestedUrl = new URL(requestedUpdateUrls.at(-1) ?? "");
+    expect(lastRequestedUrl.searchParams.get("source_id")).toBe("openai_news");
+    expect(lastRequestedUrl.searchParams.get("cursor")).toBeNull();
+    expect(updatesFeed(container).querySelector('button[aria-label="Go to page 1"][aria-current="page"]')).toBeTruthy();
+    expect(sourceFilterSection(container).querySelector('button[aria-pressed="true"]')?.textContent).toContain("OpenAI");
+
+    await act(async () => root.unmount());
+  });
+
+  it("returns to All sources when the active OpenAI card is clicked again", async () => {
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      if (url.searchParams.get("source_id") === "openai_news") return jsonResponse([firstUpdate], null);
+      return jsonResponse([secondUpdate], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "Second source update");
+
+    const filterSection = sourceFilterSection(container);
+    await act(async () => buttonWithText(filterSection, "OpenAI").click());
+    await waitForText(container, "First source update");
+    expect(buttonWithText(filterSection, "OpenAI").getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => buttonWithText(filterSection, "OpenAI").click());
+    await waitForText(container, "Second source update");
+    expect(buttonWithText(filterSection, "OpenAI").getAttribute("aria-pressed")).toBe("false");
+    expect(buttonWithText(filterSection, "All sources").getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => root.unmount());
+  });
+
+  it("selecting LangChain then clicking Next sends both the cursor and source_id=langchain_pypi", async () => {
+    const requestedUpdateUrls: string[] = [];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      requestedUpdateUrls.push(url.href);
+      if (url.searchParams.get("source_id") !== "langchain_pypi") {
+        return jsonResponse([firstUpdate], null);
+      }
+      if (url.searchParams.get("cursor") === "lc-cursor-1") {
+        return jsonResponse([secondUpdate], null);
+      }
+      return jsonResponse([firstUpdate], "lc-cursor-1");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "First source update");
+
+    await act(async () => buttonWithText(sourceFilterSection(container), "LangChain").click());
+    await waitForText(container, "First source update");
+
+    const feed = updatesFeed(container);
+    await act(async () => scopedButtonWithLabel(feed, "Next page").click());
+    await waitForText(container, "Second source update");
+
+    const lastUrl = new URL(requestedUpdateUrls.at(-1) ?? "");
+    expect(lastUrl.searchParams.get("source_id")).toBe("langchain_pypi");
+    expect(lastUrl.searchParams.get("cursor")).toBe("lc-cursor-1");
+
+    await act(async () => root.unmount());
+  });
+
+  it("switching filters after reaching page 2 resets to page 1 and never reuses the old cursor", async () => {
+    const requestedUpdateUrls: string[] = [];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      requestedUpdateUrls.push(url.href);
+      const sourceId = url.searchParams.get("source_id");
+      const cursor = url.searchParams.get("cursor");
+      if (sourceId === null) {
+        return cursor === "all-cursor-1" ? jsonResponse([secondUpdate], null) : jsonResponse([firstUpdate], "all-cursor-1");
+      }
+      // A non-null next_cursor here only so the numbered pager renders and
+      // "page 1, current" can be asserted directly -- it is never followed.
+      return jsonResponse([secondUpdate], "anthropic-cursor-1");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "First source update");
+
+    const feed = updatesFeed(container);
+    await act(async () => scopedButtonWithLabel(feed, "Next page").click());
+    await waitForText(container, "Second source update");
+    expect(feed.querySelector('button[aria-label="Go to page 2"][aria-current="page"]')).toBeTruthy();
+
+    await act(async () => buttonWithText(sourceFilterSection(container), "Anthropic").click());
+    await waitForText(container, "Second source update");
+
+    // Back to page 1 under the new filter -- and no request for the new
+    // filter ever carried the "all-cursor-1" cursor minted under "All sources".
+    expect(feed.querySelector('button[aria-label="Go to page 1"][aria-current="page"]')).toBeTruthy();
+    const requestsUnderNewFilter = requestedUpdateUrls.filter((raw) => new URL(raw).searchParams.get("source_id") === "anthropic_news");
+    expect(requestsUnderNewFilter.length).toBeGreaterThan(0);
+    for (const raw of requestsUnderNewFilter) {
+      expect(new URL(raw).searchParams.get("cursor")).toBeNull();
+    }
+
+    await act(async () => root.unmount());
+  });
+
+  it("a stale response from the previous source filter cannot overwrite the newly selected result", async () => {
+    let resolveOpenAiResponse!: (value: Response) => void;
+    const openAiPromise = new Promise<Response>((resolve) => {
+      resolveOpenAiResponse = resolve;
+    });
+    const requestedUpdateUrls: string[] = [];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      requestedUpdateUrls.push(url.href);
+      const sourceId = url.searchParams.get("source_id");
+      if (sourceId === "openai_news") return openAiPromise;
+      if (sourceId === "anthropic_news") return jsonResponse([secondUpdate], null);
+      return jsonResponse([], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "No updates yet");
+
+    const filterSection = sourceFilterSection(container);
+    // Select OpenAI (its response stays pending) then quickly switch to Anthropic.
+    await act(async () => buttonWithText(filterSection, "OpenAI").click());
+    await act(async () => buttonWithText(filterSection, "Anthropic").click());
+    await waitForText(container, "Second source update");
+
+    // The late OpenAI response must be ignored by the now-stale, aborted request.
+    await act(async () => {
+      resolveOpenAiResponse(jsonResponse([firstUpdate], null));
+    });
+    await act(async () => Promise.resolve());
+
+    expect(container.textContent).toContain("Second source update");
+    expect(container.textContent).not.toContain("First source update");
+    expect(buttonWithText(filterSection, "Anthropic").getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => root.unmount());
+  });
+
+  it("Anthropic can be selected even when its result is empty, naming it truthfully", async () => {
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      if (url.searchParams.get("source_id") === "anthropic_news") return jsonResponse([], null);
+      return jsonResponse([firstUpdate], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "First source update");
+
+    await act(async () => buttonWithText(sourceFilterSection(container), "Anthropic").click());
+    await waitForText(container, "No Anthropic updates were found.");
+    expect(container.textContent).not.toContain("First source update");
+    expect(buttonWithText(sourceFilterSection(container), "Anthropic").getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => root.unmount());
+  });
+
+  it("does not filter, hide, or otherwise affect the Published digests feed or its date-period filter", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-12T12:00:00Z"));
+
+    const requestedDigestUrls: string[] = [];
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") {
+        requestedDigestUrls.push(url.href);
+        return digestJsonResponse([firstDigest], null);
+      }
+      if (url.searchParams.get("source_id") === "openai_news") return jsonResponse([firstUpdate], null);
+      return jsonResponse([secondUpdate], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, firstDigest.title);
+    await waitForText(container, "Second source update");
+
+    const digestCallsBeforeFilter = requestedDigestUrls.length;
+    await act(async () => buttonWithText(sourceFilterSection(container), "OpenAI").click());
+    await waitForText(container, "First source update");
+
+    // Selecting an updates source filter never triggers a new digests request,
+    // and the digest period selector still reflects "All editions" untouched.
+    expect(requestedDigestUrls.length).toBe(digestCallsBeforeFilter);
+    expect(container.textContent).toContain(firstDigest.title);
+    const periodSelect = container.querySelector<HTMLSelectElement>("#digest-period");
+    expect(periodSelect?.value).toBe("all");
+
+    // The digest date-period filter, in turn, never touches the updates source filter or feed.
+    await act(async () => {
+      if (periodSelect) {
+        periodSelect.value = "week";
+        periodSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    expect(container.textContent).toContain("First source update");
+    expect(buttonWithText(sourceFilterSection(container), "OpenAI").getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => root.unmount());
+  });
+
+  it("exposes the source filter as a labelled, keyboard-operable button group with aria-pressed", async () => {
+    const fetchMock: FetchUpdates & FetchDigests = vi.fn(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/digests") return digestJsonResponse([], null);
+      return jsonResponse([firstUpdate], null);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await waitForText(container, "First source update");
+
+    const filterSection = sourceFilterSection(container);
+    expect(filterSection.getAttribute("aria-labelledby")).toBe("source-filter-heading");
+    expect(filterSection.querySelector('[role="group"][aria-label="Filter latest updates by source"]')).toBeTruthy();
+    const buttons = [...filterSection.querySelectorAll("button")];
+    expect(buttons).toHaveLength(5);
+    for (const button of buttons) {
+      expect(button.tagName).toBe("BUTTON");
+      expect(button.getAttribute("aria-pressed")).toMatch(/^(true|false)$/);
+    }
+    expect(filterSection.textContent).toContain(
+      "Choose a source to filter the latest updates below. Published editions remain unchanged.",
+    );
 
     await act(async () => root.unmount());
   });

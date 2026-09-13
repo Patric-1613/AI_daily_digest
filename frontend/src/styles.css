@@ -8,6 +8,15 @@
   --violet: #7b5cff;
   --cyan: #00d9e8;
   --orange: #f58025;
+  /* Subtle, provider-specific accents for the source filter cards only --
+     approximate brand-adjacent hues, not copied assets or exact trademark
+     values; used at low opacity as a thin border/glow, never as a large
+     fill or as the sole means of indicating selection. */
+  --accent-all: var(--violet);
+  --accent-openai: #12b981;
+  --accent-anthropic: var(--orange);
+  --accent-langchain: #f472b6;
+  --accent-langgraph: #38bdf8;
   color-scheme: dark;
 }
 
@@ -63,6 +72,53 @@ input::placeholder { color: #77739b; }
 .heroCopy { max-width: 650px; margin: 0; color: #bbb8d4; font-size: clamp(1rem, 2vw, 1.16rem); line-height: 1.75; }
 .heroMeta { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 30px; }
 .heroMeta span { padding: 7px 11px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: .72rem; font-weight: 600; }
+
+.sourceFilter { padding: 8px 0 34px; }
+.sourceFilter h2 { margin: 8px 0 6px; font-size: clamp(1.2rem, 2.4vw, 1.6rem); font-weight: 800; letter-spacing: -.04em; }
+.sourceFilterHelp { max-width: 560px; margin: 0 0 18px; color: var(--muted); font-size: .82rem; line-height: 1.6; }
+.sourceFilterGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.sourceCard {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(18, 16, 42, .78);
+  color: white;
+  text-align: left;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+.sourceCard:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--card-accent, var(--violet)) 65%, var(--border)); background: rgba(24, 21, 56, .9); }
+.sourceCard:focus-visible { outline: 3px solid rgba(0, 217, 232, .85); outline-offset: 2px; }
+.sourceCard--all { --card-accent: var(--accent-all); }
+.sourceCard--openai { --card-accent: var(--accent-openai); }
+.sourceCard--anthropic { --card-accent: var(--accent-anthropic); }
+.sourceCard--langchain { --card-accent: var(--accent-langchain); }
+.sourceCard--langgraph { --card-accent: var(--accent-langgraph); }
+.sourceCardActive {
+  border-color: var(--card-accent);
+  background: color-mix(in srgb, var(--card-accent) 16%, rgba(18, 16, 42, .92));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--card-accent) 55%, transparent), 0 10px 26px color-mix(in srgb, var(--card-accent) 22%, transparent);
+}
+.sourceMark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--card-accent, var(--violet)) 55%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card-accent, var(--violet)) 20%, transparent);
+  color: color-mix(in srgb, var(--card-accent, var(--violet)) 70%, white);
+  font-size: .62rem;
+  font-weight: 800;
+  letter-spacing: .02em;
+}
+.sourceName { font-size: .84rem; font-weight: 700; }
+.sourceCheck { position: absolute; top: 8px; right: 10px; color: var(--card-accent, var(--cyan)); font-size: .8rem; font-weight: 800; }
 
 .feedHeading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
 .feedHeading h2 { margin: 8px 0 0; font-size: clamp(1.4rem, 3vw, 2rem); font-weight: 800; letter-spacing: -.045em; }
@@ -153,6 +209,8 @@ input::placeholder { color: #77739b; }
   .articleCard { min-height: 0; grid-template-columns: 1fr; padding: 23px; }
   .pagerButton { min-width: 36px; min-height: 36px; padding: 0 9px; font-size: .72rem; }
   .pagerButton.pagerEdge { padding: 0 11px; }
+  .sourceFilterGrid { display: flex; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x proximity; }
+  .sourceCard { flex: 0 0 auto; min-width: 132px; scroll-snap-align: start; }
 }
 
 @media (prefers-reduced-motion: reduce) {

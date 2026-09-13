@@ -1,6 +1,7 @@
 import type { UpdateSummary } from "./api/updates";
 import { safeSourceUrl } from "./api/updates";
 import { Pager } from "./Pager";
+import { labelForSourceId } from "./SourceFilter";
 
 interface UpdatesFeedProps {
   updates: readonly UpdateSummary[];
@@ -11,6 +12,10 @@ interface UpdatesFeedProps {
   highestCachedPage: number;
   terminalPage: number | null;
   hasNext: boolean;
+  /** The currently selected Latest-updates source filter, or `null` for
+   * "All sources" -- used only to name the provider in a truthful empty
+   * state (never to fabricate a count or a freshness claim). */
+  selectedSourceId: string | null;
   onRetry: () => void;
   onGoToPage: (page: number) => void;
   onPrevious: () => void;
@@ -41,6 +46,7 @@ export function UpdatesFeed({
   highestCachedPage,
   terminalPage,
   hasNext,
+  selectedSourceId,
   onRetry,
   onGoToPage,
   onPrevious,
@@ -72,7 +78,14 @@ export function UpdatesFeed({
 
       {!initialLoading && !error && updates.length === 0 ? (
         <div className="feedState" role="status">
-          <div><h3>No updates yet</h3><p>The collector has not published any source updates.</p></div>
+          <div>
+            <h3>No updates yet</h3>
+            <p>
+              {selectedSourceId !== null
+                ? `No ${labelForSourceId(selectedSourceId)} updates were found.`
+                : "The collector has not published any source updates."}
+            </p>
+          </div>
         </div>
       ) : null}
 
