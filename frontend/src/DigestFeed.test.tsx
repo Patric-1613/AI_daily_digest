@@ -53,10 +53,17 @@ const detailState = {
 const pagerState = { currentPage: 1, highestCachedPage: 1, terminalPage: null, hasNext: false };
 
 describe("DigestFeed states", () => {
-  it("renders an accessible loading state", () => {
+  it("renders an accessible loading state without slow loading hint by default", () => {
     const html = renderToStaticMarkup(<DigestFeed digests={[]} initialLoading loadingMore={false} error={null} {...pagerState} {...detailState} {...handlers} />);
     expect(html).toContain("Loading published digests");
     expect(html).toContain('aria-busy="true"');
+    expect(html).not.toContain("This can take a little longer the first time");
+  });
+
+  it("renders slow loading fallback copy when slowLoading is true", () => {
+    const html = renderToStaticMarkup(<DigestFeed digests={[]} initialLoading slowLoading loadingMore={false} error={null} {...pagerState} {...detailState} {...handlers} />);
+    expect(html).toContain("Loading published digests");
+    expect(html).toContain("This can take a little longer the first time — the server may be waking up.");
   });
 
   it("renders the unpublished empty state", () => {

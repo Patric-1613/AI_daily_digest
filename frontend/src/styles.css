@@ -115,6 +115,7 @@ input::placeholder { color: #77739b; }
 .feedState h3 { margin: 0 0 7px; font-size: 1rem; }
 .feedState button, .inlineError button { padding: 9px 13px; border: 1px solid var(--violet); border-radius: 9px; background: rgba(123, 92, 255, .16); color: white; font-size: .72rem; font-weight: 700; }
 .feedStateError { justify-content: space-between; border-color: rgba(245, 128, 37, .5); }
+.slowLoadingHint { margin-top: 7px !important; color: var(--muted); font-size: .78rem; }
 .loadingMark { width: 24px; height: 24px; flex: 0 0 24px; border: 2px solid var(--border); border-top-color: var(--cyan); border-radius: 50%; animation: spin 900ms linear infinite; }
 .inlineError { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; padding: 13px 15px; border: 1px solid rgba(245, 128, 37, .45); border-radius: 11px; color: #ffd4b4; font-size: .72rem; }
 .pager { margin-top: 18px; }
