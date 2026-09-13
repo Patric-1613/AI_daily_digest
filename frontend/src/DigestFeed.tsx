@@ -5,6 +5,7 @@ import { Pager } from "./Pager";
 interface DigestFeedProps {
   digests: readonly DigestSummary[];
   initialLoading: boolean;
+  slowLoading?: boolean;
   loadingMore: boolean;
   error: string | null;
   currentPage: number;
@@ -46,6 +47,7 @@ function formatChangeValue(value: string | null, fallback: string): string {
 export function DigestFeed({
   digests,
   initialLoading,
+  slowLoading = false,
   loadingMore,
   error,
   currentPage,
@@ -77,7 +79,15 @@ export function DigestFeed({
       {initialLoading ? (
         <div className="feedState" role="status">
           <span className="loadingMark" aria-hidden="true" />
-          <div><h3>Loading published digests</h3><p>Looking for the latest evidence-checked editions…</p></div>
+          <div>
+            <h3>Loading published digests</h3>
+            <p>Looking for the latest evidence-checked editions…</p>
+            {slowLoading ? (
+              <p className="slowLoadingHint">
+                This can take a little longer the first time — the server may be waking up.
+              </p>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
