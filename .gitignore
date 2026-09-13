@@ -23,6 +23,7 @@ CLAUDE.local.md
 # Generated/runtime data
 data/raw/
 data/processed/
+temp/
 *.log
 
 # Frontend (when added)
