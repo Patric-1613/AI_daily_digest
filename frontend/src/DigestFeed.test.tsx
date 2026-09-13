@@ -35,7 +35,9 @@ const detail: DigestDetail = {
 
 const handlers = {
   onRetry: vi.fn(),
-  onLoadMore: vi.fn(),
+  onGoToPage: vi.fn(),
+  onPrevious: vi.fn(),
+  onNext: vi.fn(),
   onSelectDigest: vi.fn(),
   onCloseDetail: vi.fn(),
   onRetryDetail: vi.fn(),
@@ -48,32 +50,83 @@ const detailState = {
   detailError: null,
 };
 
+const pagerState = { currentPage: 1, highestCachedPage: 1, terminalPage: null, hasNext: false };
+
 describe("DigestFeed states", () => {
   it("renders an accessible loading state", () => {
-    const html = renderToStaticMarkup(<DigestFeed digests={[]} initialLoading loadingMore={false} error={null} nextCursor={null} {...detailState} {...handlers} />);
+    const html = renderToStaticMarkup(<DigestFeed digests={[]} initialLoading loadingMore={false} error={null} {...pagerState} {...detailState} {...handlers} />);
     expect(html).toContain("Loading published digests");
     expect(html).toContain('aria-busy="true"');
   });
 
   it("renders the unpublished empty state", () => {
-    const html = renderToStaticMarkup(<DigestFeed digests={[]} initialLoading={false} loadingMore={false} error={null} nextCursor={null} {...detailState} {...handlers} />);
+    const html = renderToStaticMarkup(<DigestFeed digests={[]} initialLoading={false} loadingMore={false} error={null} {...pagerState} {...detailState} {...handlers} />);
     expect(html).toContain("No published digests yet");
   });
 
   it("renders a retryable, user-safe error", () => {
-    const html = renderToStaticMarkup(<DigestFeed digests={[]} initialLoading={false} loadingMore={false} error="The digest service could not be reached." nextCursor={null} {...detailState} {...handlers} />);
+    const html = renderToStaticMarkup(<DigestFeed digests={[]} initialLoading={false} loadingMore={false} error="The digest service could not be reached." {...pagerState} {...detailState} {...handlers} />);
     expect(html).toContain("Digests are temporarily unavailable");
     expect(html).toContain("Try again");
   });
 
-  it("renders published API data and pagination", () => {
-    const html = renderToStaticMarkup(<DigestFeed digests={[digest]} initialLoading={false} loadingMore={false} error={null} nextCursor="cursor" {...detailState} {...handlers} />);
+  it("renders published API data and a numbered pager with the current page highlighted", () => {
+    const html = renderToStaticMarkup(<DigestFeed
+      digests={[digest]}
+      initialLoading={false}
+      loadingMore={false}
+      error={null}
+      currentPage={1}
+      highestCachedPage={2}
+      terminalPage={null}
+      hasNext
+      {...detailState}
+      {...handlers}
+    />);
     expect(html).toContain("AI Daily Digest — 24 August 2026");
     expect(html).toContain("24 August 2026");
     expect(html).toContain("Evidence-checked edition");
-    expect(html).toContain("Load more digests");
+    expect(html).toContain('<nav class="pager" aria-label="Digest pagination">');
+    expect(html).toContain('aria-label="Go to page 1"');
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain('aria-label="Go to page 2"');
     expect(html).toContain(`aria-label="View details for ${digest.title}"`);
     expect(html).toContain('aria-expanded="false"');
+  });
+
+  it("omits the pager entirely when there is only one known, terminal page", () => {
+    const html = renderToStaticMarkup(<DigestFeed
+      digests={[digest]}
+      initialLoading={false}
+      loadingMore={false}
+      error={null}
+      currentPage={1}
+      highestCachedPage={1}
+      terminalPage={null}
+      hasNext={false}
+      {...detailState}
+      {...handlers}
+    />);
+    expect(html).not.toContain('class="pager"');
+  });
+
+  it("shows the inline retry banner and keeps the pager's current page during a load-more error", () => {
+    const html = renderToStaticMarkup(<DigestFeed
+      digests={[digest]}
+      initialLoading={false}
+      loadingMore={false}
+      error="The digest service could not be reached."
+      currentPage={1}
+      highestCachedPage={1}
+      terminalPage={null}
+      hasNext
+      {...detailState}
+      {...handlers}
+    />);
+    expect(html).toContain('class="inlineError"');
+    expect(html).toContain('class="pager"');
+    expect(html).toContain('aria-label="Go to page 1"');
+    expect(html).toContain('aria-current="page"');
   });
 
   it("renders the selected detail loading state", () => {
@@ -82,7 +135,7 @@ describe("DigestFeed states", () => {
       initialLoading={false}
       loadingMore={false}
       error={null}
-      nextCursor={null}
+      {...pagerState}
       selectedDigestId={digest.id}
       detail={null}
       detailLoading
@@ -102,7 +155,7 @@ describe("DigestFeed states", () => {
       initialLoading={false}
       loadingMore={false}
       error={null}
-      nextCursor={null}
+      {...pagerState}
       selectedDigestId={digest.id}
       detail={null}
       detailLoading={false}
@@ -121,7 +174,7 @@ describe("DigestFeed states", () => {
       initialLoading={false}
       loadingMore={false}
       error={null}
-      nextCursor={null}
+      {...pagerState}
       selectedDigestId={digest.id}
       detail={{ ...detail, claims: [] }}
       detailLoading={false}
@@ -138,7 +191,7 @@ describe("DigestFeed states", () => {
       initialLoading={false}
       loadingMore={false}
       error={null}
-      nextCursor={null}
+      {...pagerState}
       selectedDigestId={digest.id}
       detail={detail}
       detailLoading={false}
@@ -169,7 +222,7 @@ describe("DigestFeed states", () => {
       initialLoading={false}
       loadingMore={false}
       error={null}
-      nextCursor={null}
+      {...pagerState}
       selectedDigestId={digest.id}
       detail={unlinkedDetail}
       detailLoading={false}
