@@ -7,8 +7,12 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ai_daily_digest.delivery.api.client_network import (
+    ClientNetworkResolutionError,
+    resolve_client_network_identity,
+)
 from ai_daily_digest.delivery.api.dependencies import get_subscription_service
-from ai_daily_digest.delivery.api.errors import ApiError, ErrorEnvelope
+from ai_daily_digest.delivery.api.errors import INTERNAL_ERROR_CODE, ApiError, ErrorEnvelope
 from ai_daily_digest.delivery.subscriptions.repository import normalize_email
 from ai_daily_digest.delivery.subscriptions.service import (
     SubscriptionRateLimitError,
@@ -50,7 +54,7 @@ SubscriptionServiceDependency = Annotated[SubscriptionService, Depends(get_subsc
 
 
 def _network(request: Request) -> str:
-    return request.client.host if request.client is not None else "127.0.0.1"
+    return resolve_client_network_identity(request)
 
 
 def _require_frontend_origin(request: Request) -> None:
@@ -76,6 +80,12 @@ def _translate_failure(exc: Exception) -> None:
             code="subscription_rate_limited",
             message="Too many subscription requests. Please try again later.",
         ) from None
+    if isinstance(exc, ClientNetworkResolutionError):
+        raise ApiError(
+            status_code=500,
+            code=INTERNAL_ERROR_CODE,
+            message="The subscription request could not be processed.",
+        ) from None
     raise exc
 
 
@@ -84,7 +94,11 @@ def _translate_failure(exc: Exception) -> None:
     operation_id="request_subscription",
     status_code=202,
     response_model=SubscriptionMessage,
-    responses={422: {"model": ErrorEnvelope}, 429: {"model": ErrorEnvelope}},
+    responses={
+        422: {"model": ErrorEnvelope},
+        429: {"model": ErrorEnvelope},
+        500: {"model": ErrorEnvelope},
+    },
 )
 async def request_subscription(
     payload: SubscriptionRequest,
@@ -93,7 +107,7 @@ async def request_subscription(
 ) -> SubscriptionMessage:
     try:
         await service.request_subscription(payload.email, _network(request))
-    except SubscriptionRateLimitError as exc:
+    except (SubscriptionRateLimitError, ClientNetworkResolutionError) as exc:
         _translate_failure(exc)
     return SubscriptionMessage(message=GENERIC_REQUEST_MESSAGE)
 
@@ -107,6 +121,7 @@ async def request_subscription(
         403: {"model": ErrorEnvelope},
         422: {"model": ErrorEnvelope},
         429: {"model": ErrorEnvelope},
+        500: {"model": ErrorEnvelope},
     },
 )
 async def confirm_subscription(
@@ -117,7 +132,11 @@ async def confirm_subscription(
     _require_frontend_origin(request)
     try:
         await service.confirm(payload.token, _network(request))
-    except (InvalidSubscriptionTokenError, SubscriptionRateLimitError) as exc:
+    except (
+        InvalidSubscriptionTokenError,
+        SubscriptionRateLimitError,
+        ClientNetworkResolutionError,
+    ) as exc:
         _translate_failure(exc)
     return SubscriptionMessage(message="Your subscription has been confirmed.")
 
@@ -131,6 +150,7 @@ async def confirm_subscription(
         403: {"model": ErrorEnvelope},
         422: {"model": ErrorEnvelope},
         429: {"model": ErrorEnvelope},
+        500: {"model": ErrorEnvelope},
     },
 )
 async def unsubscribe_subscription(
@@ -141,6 +161,10 @@ async def unsubscribe_subscription(
     _require_frontend_origin(request)
     try:
         await service.unsubscribe(payload.token, _network(request))
-    except (InvalidSubscriptionTokenError, SubscriptionRateLimitError) as exc:
+    except (
+        InvalidSubscriptionTokenError,
+        SubscriptionRateLimitError,
+        ClientNetworkResolutionError,
+    ) as exc:
         _translate_failure(exc)
     return SubscriptionMessage(message="You have been unsubscribed.")

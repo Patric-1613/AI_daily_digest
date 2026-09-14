@@ -12,11 +12,12 @@ responsibility.
 - [ ] In the Render web-service environment—not Git—set `EMAIL_PROVIDER_API_KEY`,
       `EMAIL_FROM_ADDRESS`, `SUBSCRIPTION_TOKEN_ENVIRONMENT`, `SUBSCRIPTION_CONFIRM_KEY_ID`,
       `SUBSCRIPTION_CONFIRM_KEY`, `SUBSCRIPTION_UNSUBSCRIBE_KEY_ID`,
-      `SUBSCRIPTION_UNSUBSCRIBE_KEY`, `SUBSCRIPTION_RATE_LIMIT_KEY`, the exact public
-      `FRONTEND_ORIGIN`, and `FORWARDED_ALLOW_IPS`.
-- [ ] Enter trusted Render proxy addresses in `FORWARDED_ALLOW_IPS` as explicit bare IP addresses,
-      without CIDR suffixes or `*`. Confirm the API starts with the subscription routes mounted;
-      incomplete or invalid subscription configuration must remain fail-closed.
+      `SUBSCRIPTION_UNSUBSCRIBE_KEY`, `SUBSCRIPTION_RATE_LIMIT_KEY`, and the exact public
+      `FRONTEND_ORIGIN`. There is no `FORWARDED_ALLOW_IPS` value to obtain or configure: the
+      subscription rate-limit network identity is resolved from Cloudflare's `CF-Connecting-IP`
+      header whenever the deployed process is a verified Render web service, independently of
+      Render's own undocumented proxy address. Confirm the API starts with the subscription routes
+      mounted; incomplete or invalid subscription configuration must remain fail-closed.
 - [ ] Choose one approved team inbox. Do not use another recipient or record the address in the
       smoke evidence.
 

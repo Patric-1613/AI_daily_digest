@@ -20,7 +20,9 @@ def _subscription_environment() -> dict[str, str]:
         "SUBSCRIPTION_RATE_LIMIT_KEY": "r" * 32,
         "EMAIL_PROVIDER_API_KEY": "provider-key-that-must-not-leak",
         "EMAIL_FROM_ADDRESS": "digest@example.com",
-        "FORWARDED_ALLOW_IPS": "10.0.0.9, 2001:db8::/64",
+        # Render's actual injected runtime value -- proves complete subscription configuration
+        # no longer depends on this variable at all (issue #136).
+        "FORWARDED_ALLOW_IPS": "*",
     }
 
 
@@ -50,6 +52,9 @@ def test_cursor_secret_is_optional_until_a_repository_is_configured() -> None:
 
 
 def test_subscription_production_configuration_is_complete_and_secret_safe() -> None:
+    """Also proves the fix for issue #136: a complete, valid application-specific configuration
+    starts successfully even with Render's actual injected FORWARDED_ALLOW_IPS="*" present,
+    because subscription configuration no longer reads that variable at all."""
     environment = _subscription_environment()
     settings = DeliverySettings.from_environment(environment)
 
@@ -59,7 +64,7 @@ def test_subscription_production_configuration_is_complete_and_secret_safe() -> 
     assert security.confirmation_key_id == "prod-confirm-2026-09"
     assert security.unsubscribe_key_id == "prod-unsubscribe-2026-09"
     assert subscription.confirmation_delivery.frontend_origin == FRONTEND_ORIGIN
-    assert subscription.forwarded_allow_ips == "10.0.0.9,2001:db8::/64"
+    assert not hasattr(subscription, "forwarded_allow_ips")
     for sensitive_name in (
         "SUBSCRIPTION_CONFIRM_KEY",
         "SUBSCRIPTION_UNSUBSCRIBE_KEY",
@@ -87,8 +92,9 @@ def test_partial_or_weak_subscription_security_configuration_fails_closed() -> N
 
 def test_renders_automatic_forwarded_allow_ips_alone_does_not_activate_subscriptions() -> None:
     """Render injects FORWARDED_ALLOW_IPS into every Python service by default (see
-    scripts/start_render.sh); with no application-specific subscription/email setting present,
-    that alone must never be read as "subscription configuration has started"."""
+    scripts/start_render.sh); subscription configuration no longer reads this variable at all
+    (issue #136), so with no application-specific subscription/email setting present, subscriptions
+    remain disabled regardless of its value."""
     settings = DeliverySettings.from_environment(
         {"FRONTEND_ORIGIN": FRONTEND_ORIGIN, "FORWARDED_ALLOW_IPS": "*"}
     )
@@ -117,28 +123,6 @@ def test_provider_or_proxy_configuration_without_the_security_set_fails_closed()
                 "FORWARDED_ALLOW_IPS": "10.0.0.9",
             }
         )
-
-
-@pytest.mark.parametrize(
-    "allowlist",
-    [
-        "*",
-        "0.0.0.0/0",
-        "::/0",
-        "proxy.internal",
-        "10.0.0.5/24",
-        "10.0.0.9,,10.0.0.10",
-        "10.0.0.9,10.0.0.9",
-    ],
-)
-def test_wildcard_unbounded_or_malformed_proxy_configuration_fails_closed(
-    allowlist: str,
-) -> None:
-    environment = _subscription_environment()
-    environment["FORWARDED_ALLOW_IPS"] = allowlist
-
-    with pytest.raises(ValueError, match="FORWARDED_ALLOW_IPS"):
-        DeliverySettings.from_environment(environment)
 
 
 @pytest.mark.parametrize(

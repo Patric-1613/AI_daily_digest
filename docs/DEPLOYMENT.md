@@ -110,38 +110,55 @@ disk), injects both `DATABASE_URL` values by reference, and commits no secret va
 ### Subscription production activation gate
 
 Subscription routes are disabled when every application-specific subscription/email value is
-empty. `FORWARDED_ALLOW_IPS` does not count toward that check on its own: Render automatically
-supplies this variable to every Python service (observed value: `*`), so its presence alone must
-never be read as "subscription configuration has started," or every deploy would fail startup
-even with subscriptions intentionally left disabled (issue #131). Routes mount only when at least
-one application-specific setting is present **and** this complete set validates together:
+empty. Routes mount only when at least one application-specific setting is present **and** this
+complete set validates together:
 
 - `SUBSCRIPTION_TOKEN_ENVIRONMENT`;
 - `SUBSCRIPTION_CONFIRM_KEY_ID` and `SUBSCRIPTION_CONFIRM_KEY`;
 - `SUBSCRIPTION_UNSUBSCRIBE_KEY_ID` and `SUBSCRIPTION_UNSUBSCRIBE_KEY`;
-- `SUBSCRIPTION_RATE_LIMIT_KEY`;
-- `EMAIL_PROVIDER_API_KEY` and `EMAIL_FROM_ADDRESS`; and
-- `FORWARDED_ALLOW_IPS`, as a bounded comma-separated list of trusted proxy IP addresses or
-  canonical CIDR networks (for example, use `10.0.0.0/24`, not `10.0.0.5/24`).
+- `SUBSCRIPTION_RATE_LIMIT_KEY`; and
+- `EMAIL_PROVIDER_API_KEY` and `EMAIL_FROM_ADDRESS`.
 
-Partial, weak, malformed, duplicate, non-canonical CIDR, wildcard (`*`), or all-address
-(`0.0.0.0/0` or `::/0`) configuration fails startup. Python validates CIDRs with the same strict
-network semantics used by Uvicorn; `scripts/start_render.sh` then passes the configured allowlist
-to Uvicorn explicitly. An empty value trusts no forwarding peer. Application rate limiting uses
-`request.client` only after Uvicorn has accepted forwarding metadata from that deployment-owned
-allowlist. Application code never parses `Forwarded` or `X-Forwarded-For` itself.
+Partial, weak, or malformed configuration fails startup. `FORWARDED_ALLOW_IPS` is not part of
+this set and subscription configuration never reads it: Render automatically supplies that
+variable to every Python service (observed value: `*`) and does not publish a stable reverse-proxy
+CIDR an operator could supply instead, so it can never be the security boundary for the real
+client address here (issue #136).
 
-Person A completes activation under issue #53:
+Instead, `ai_daily_digest.delivery.api.client_network.resolve_client_network_identity()` derives
+the subscription rate-limit network identity from Cloudflare's `CF-Connecting-IP` header,
+verified to be trustworthy only when the process is confirmed to be running as a public Render web
+service (`RENDER=true` and `RENDER_SERVICE_TYPE=web`, both platform-set facts, not operator
+configuration). Cloudflare fronts every Render service and always overwrites this header with the
+real connecting client's address before Render's own load balancer is reached, so it cannot be
+spoofed by a caller. `X-Forwarded-For` is never consulted for this purpose, because its leftmost
+value can be caller-controlled. Missing, empty, malformed, comma-joined, or repeated
+`CF-Connecting-IP` values fail closed with a generic error rather than falling back to a guess.
+Outside a verified Render web service (local development, tests, or any other supported
+deployment target), the existing direct ASGI connection peer (`request.client`) is used exactly as
+before this mechanism existed. Application code still never parses `Forwarded` itself.
 
-1. Confirm the exact Render proxy address/CIDR set through reviewed platform evidence. Never use
-   `*` or guess a range merely to make the route available.
-2. Enter the complete set in Render. Secret values stay in Render; `.env.example` remains empty.
-3. Deploy the API while `VITE_SUBSCRIPTIONS_ENABLED` remains false or unset.
-4. Follow [`SMOKE_TEST.md`](SMOKE_TEST.md) with one approved team address to verify request,
-   confirmation, confirmation replay, and unsubscribe without copying the address, token, key, or
-   full URL into an issue or log.
-5. Only after that API smoke passes, set the public frontend build flag in Render and rebuild the
-   static site. The flag remains false or unset in Git.
+Person A completes activation under issue #53, in this exact order (matching
+[`SMOKE_TEST.md`](SMOKE_TEST.md)):
+
+1. Enter the complete application-specific set in Render. Secret values stay in Render;
+   `.env.example` remains empty. There is no proxy CIDR to obtain or configure.
+2. Let Render deploy the API with that environment (entering the values triggers the restart).
+3. Verify health, readiness, `/openapi.json`, and that the three subscription routes are mounted,
+   while `VITE_SUBSCRIPTIONS_ENABLED` still remains false or unset — this confirms the API side is
+   ready without exposing anything publicly yet.
+4. Only then set `VITE_SUBSCRIPTIONS_ENABLED=true` on the Render static site and rebuild it. This
+   is a temporary Render environment change only; the flag remains false or unset in Git. The
+   confirmation and unsubscribe pages are not mounted, and the full lifecycle cannot be exercised
+   through the deployed frontend, until this step has run.
+5. With one approved team address, run the complete browser lifecycle end to end: subscribe,
+   receive the confirmation email, open and complete the confirmation page/action, receive the
+   unsubscribe email, open and complete the unsubscribe page/action, then replay the unsubscribe
+   link and confirm the idempotent result — without copying the address, token, key, or full URL
+   into an issue or log.
+6. If any step in that lifecycle fails, immediately set `VITE_SUBSCRIPTIONS_ENABLED=false` (or
+   remove it) in Render and rebuild the static site before doing anything else.
+7. Leave the flag enabled in Render only after the complete lifecycle in step 5 passes.
 
 RFC 8058 one-click unsubscribe remains disabled and absent from this activation. Campaign email,
 provider webhooks, and live sends beyond the controlled team-address smoke test remain out of
@@ -538,9 +555,10 @@ environment, and only after the key is configured is the first execution **manua
 run's result is recorded on issue #53.
 
 Subscription application wiring now enforces the fail-closed gates from ADRs 0012 and 0013. Person
-A must still enter the complete Render/Resend values, provide the explicit trusted-proxy allowlist,
-and verify that `request.client` is the validated public client address under issue #53. The routes
-remain unmounted when the complete set is absent, and partial or unsafe configuration fails
-startup. The static frontend likewise keeps `VITE_SUBSCRIPTIONS_ENABLED` false or unset until the
-controlled smoke test passes, so production does not display controls backed by an unavailable
-endpoint.
+A must still enter the complete Render/Resend application-specific values under issue #53; there
+is no trusted-proxy allowlist to obtain or configure, since the subscription rate-limit network
+identity is resolved from Cloudflare's `CF-Connecting-IP` header on a verified Render web service
+(see "Subscription production activation gate" above). The routes remain unmounted when the
+complete set is absent, and partial or unsafe configuration fails startup. The static frontend
+likewise keeps `VITE_SUBSCRIPTIONS_ENABLED` false or unset until the controlled smoke test passes,
+so production does not display controls backed by an unavailable endpoint.

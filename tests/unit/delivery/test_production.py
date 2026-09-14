@@ -8,13 +8,10 @@ from typing import cast
 
 import httpx
 import pytest
-from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 import ai_daily_digest.delivery.api.production as production_module
-from ai_daily_digest.delivery.api.config import DeliverySettings
 from ai_daily_digest.delivery.api.production import create_production_app
 from ai_daily_digest.delivery.subscriptions.resend import (
     ConfirmationDeliveryUnavailableError,
@@ -130,7 +127,6 @@ def _enable_subscriptions(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         "SUBSCRIPTION_RATE_LIMIT_KEY": "r" * 32,
         "EMAIL_PROVIDER_API_KEY": "provider-key-that-must-not-leak",
         "EMAIL_FROM_ADDRESS": "digest@example.com",
-        "FORWARDED_ALLOW_IPS": "10.0.0.0/24",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -360,44 +356,6 @@ def test_render_start_command_passes_an_explicit_proxy_allowlist_to_uvicorn() ->
 
     assert "--proxy-headers" in start_script
     assert '--forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-}"' in start_script
-
-
-@pytest.mark.parametrize(
-    ("proxy_address", "expect_forwarded_client"),
-    [
-        ("10.0.0.9", True),
-        ("2001:db8::5", True),
-        ("192.0.2.10", False),
-    ],
-)
-def test_validated_proxy_allowlist_matches_uvicorn_proxy_trust(
-    monkeypatch: pytest.MonkeyPatch,
-    proxy_address: str,
-    expect_forwarded_client: bool,
-) -> None:
-    _configure_production(monkeypatch)
-    configured = _enable_subscriptions(monkeypatch)
-    configured["FORWARDED_ALLOW_IPS"] = "10.0.0.9,2001:db8::/64"
-    monkeypatch.setenv("FORWARDED_ALLOW_IPS", configured["FORWARDED_ALLOW_IPS"])
-    settings = DeliverySettings.from_environment()
-    assert settings.subscription is not None
-
-    app = FastAPI()
-
-    @app.get("/client")
-    async def client_address(request: Request) -> dict[str, str | None]:
-        return {"host": request.client.host if request.client else None}
-
-    app.add_middleware(
-        ProxyHeadersMiddleware,
-        trusted_hosts=settings.subscription.forwarded_allow_ips,
-    )
-    forwarded_client = "203.0.113.25"
-    with TestClient(app, client=(proxy_address, 50000)) as client:
-        response = client.get("/client", headers={"X-Forwarded-For": forwarded_client})
-
-    expected_client = forwarded_client if expect_forwarded_client else proxy_address
-    assert response.json() == {"host": expected_client}
 
 
 def test_cors_allows_only_configured_origin_and_never_allows_credentials(

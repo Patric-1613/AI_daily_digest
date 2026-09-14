@@ -253,6 +253,19 @@ trusted-proxy configuration, the connection peer is used and forwarded headers a
 production must not use a wildcard trusted-proxy setting. The network identity masks validated IP
 addresses to IPv4 `/24` or IPv6 `/56` before applying the purpose-specific HMAC.
 
+**Implementation clarification (issue #136):** Render automatically injects `FORWARDED_ALLOW_IPS=*`
+into every Python service and does not publish a stable reverse-proxy CIDR, so an
+"explicit deployment-controlled trusted-proxy allowlist" satisfying the paragraph above cannot be
+supplied through Uvicorn's proxy-trust mechanism on that platform. The shipped implementation
+satisfies this ADR's actual security requirement -- a verified, non-spoofable real client
+address, with forwarded headers never trusted from an unverified source -- by deriving the address
+from Cloudflare's `CF-Connecting-IP` header only when the process is independently confirmed to be
+a public Render web service (`RENDER=true` and `RENDER_SERVICE_TYPE=web`, both platform-set facts).
+Cloudflare fronts every Render service and unconditionally overwrites this header, so it cannot be
+supplied by a caller. `X-Forwarded-For` remains untrusted everywhere, including on Render. Outside
+a verified Render web service, the connection peer is used exactly as this paragraph already
+specifies for "no valid trusted-proxy configuration."
+
 Raw addresses, network values, request bodies, token values, query strings, full URLs, secrets,
 and database URLs are never logged or stored in limit records. Exceeding a limit returns the
 standard error envelope with HTTP 429 and a generic message that does not disclose subscription
